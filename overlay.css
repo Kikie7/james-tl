@@ -24,7 +24,7 @@
 /* ── Speech bubble (above the head) ── */
 #jt-bubble {
   position: relative;
-  max-width: 320px;
+  max-width: min(320px, calc(100vw - 40px));   /* never wider than the screen */
   min-width: 200px;
   max-height: 40vh;
   overflow-y: auto;
@@ -111,7 +111,7 @@
 /* ── Ask bubble (stacks ABOVE the tip bubble — answers to agent questions) ── */
 #jt-ask-bubble {
   position: relative;
-  max-width: 320px;
+  max-width: min(320px, calc(100vw - 40px));
   min-width: 200px;
   max-height: 40vh;
   overflow-y: auto;
@@ -328,13 +328,15 @@
   display: flex;
   gap: 6px;
   align-items: center;
-  opacity: 1;                /* always visible — no more hunting for hover */
+  opacity: 0;                /* hidden at rest — reveal on hover for a clean look */
   transition: opacity 0.2s;
   pointer-events: auto;
   flex-wrap: wrap;
   justify-content: flex-end;
   max-width: 320px;
 }
+/* Reveal the controls when hovering anywhere over James */
+#james-tl-root:hover #jt-controls { opacity: 1; }
 .jt-ctrl-btn {
   background: rgba(255,255,255,0.96);
   border: 0.5px solid rgba(0,0,0,0.08);
