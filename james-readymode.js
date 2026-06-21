@@ -146,6 +146,14 @@
     detectReadymodeState();
     autoDetectAgentName();
     setInterval(updateDebug, 1000);
+    // Debug line is hidden for agents. YOU can toggle it on/off while monitoring
+    // with Ctrl+Shift+J (e.g. during the floor test).
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'J' || e.key === 'j')) {
+        const dbg = document.getElementById('jt-debug');
+        if (dbg) dbg.style.display = (dbg.style.display === 'none') ? 'block' : 'none';
+      }
+    });
     // Native bonus: keep trying to grab ReadyMode's call audio directly, so the
     // agent never has to click anything. Re-checks every few seconds; grabs as
     // soon as a live call audio element appears, and again after each new call.
@@ -204,7 +212,6 @@
       </div>
 
       <div id="jt-controls">
-        <button class="jt-ctrl-btn" id="jt-customer-btn" title="Enable hearing the customer (one-time)">🔊 CUSTOMER</button>
         <button class="jt-ctrl-btn" id="jt-min-btn" title="Minimize / expand">MIN</button>
         <button class="jt-ctrl-btn" id="jt-toggle-btn" title="Turn James on/off">ON</button>
       </div>
@@ -216,7 +223,7 @@
         <div id="jt-status-mini"></div>
       </div>
 
-      <div id="jt-debug"></div>
+      <div id="jt-debug" style="display:none;"></div>
     `;
     document.body.appendChild(root);
 
@@ -244,22 +251,6 @@
     document.getElementById('jt-ask-close').addEventListener('click', () => setAskOpen(false));
     document.getElementById('jt-min-btn').addEventListener('click', toggleMinimize);
     document.getElementById('jt-toggle-btn').addEventListener('click', toggleEnabled);
-
-    // Customer audio button → starts tab-audio capture (needs this user click).
-    // Once started, it persists across all calls this shift — a one-time action.
-    document.getElementById('jt-customer-btn').addEventListener('click', (e) => {
-      e.stopPropagation();
-      const btn = document.getElementById('jt-customer-btn');
-      if (state.tabStream) {
-        stopCustomerCapture();
-        btn.textContent = '🔊 CUSTOMER';
-        btn.dataset.off = 'false';
-        showMiniStatus('Customer audio off');
-      } else {
-        startCustomerCapture();
-        showMiniStatus('Sharing… pick screen + tick audio');
-      }
-    });
 
     document.querySelectorAll('.jt-quick-btn').forEach(btn => {
       btn.addEventListener('click', () => askJames(btn.dataset.q));
@@ -290,14 +281,9 @@
       const move = (ev) => {
         const dx = ev.clientX - sx, dy = ev.clientY - sy;
         if (Math.abs(dx) > 4 || Math.abs(dy) > 4) state._dragging = true;
-        // Constrain so the HEAD stays fully on screen (head is ~64px, at bottom of stack)
-        const headSize = 70;
-        const maxLeft = window.innerWidth - headSize;
-        const maxTop  = window.innerHeight - headSize;
-        let newLeft = Math.max(0, Math.min(sl + dx, maxLeft));
-        let newTop  = Math.max(0, Math.min(st + dy, maxTop));
-        root.style.left = newLeft + 'px';
-        root.style.top  = newTop + 'px';
+        const pos = clampPosition(sl + dx, st + dy);
+        root.style.left = pos.left + 'px';
+        root.style.top  = pos.top + 'px';
         root.style.right = 'auto';
         root.style.bottom = 'auto';
       };
@@ -312,18 +298,37 @@
     });
   }
 
-  // Ensure the avatar is always fully visible on screen
+  // Compute a safe position for the avatar's top-left such that BOTH the head AND
+  // any speech bubble (which appears ABOVE and to the LEFT of the head) stay fully
+  // on screen. This is why a tip near an edge no longer pushes James out of frame.
+  function clampPosition(left, top) {
+    const headSize   = 70;
+    // Reserve room for the bubble that pops above the head.
+    const bubbleW    = 340;   // max bubble width + a little margin
+    const bubbleH    = Math.min(window.innerHeight * 0.40, 320) + 30; // max bubble height + tail/gap
+    const margin     = 8;
+    // The root is right-aligned: its right edge sits near the head's right edge.
+    // Horizontal: the bubble extends LEFT from the right edge, so the left edge of
+    // the whole widget must stay >= margin. Keep the head's right edge within view.
+    const minLeft = margin + (bubbleW - headSize); // leave bubble room on the left
+    const maxLeft = window.innerWidth - headSize - margin;
+    // Vertical: the bubble sits ABOVE the head, so the head's top must stay far
+    // enough down that the bubble fits above it.
+    const minTop = margin + bubbleH;              // leave bubble room above
+    const maxTop = window.innerHeight - headSize - margin;
+    return {
+      left: Math.max(Math.min(minLeft, maxLeft), Math.min(left, maxLeft)),
+      top:  Math.max(Math.min(minTop, maxTop),  Math.min(top, maxTop)),
+    };
+  }
+
+  // Ensure the avatar AND its bubble are always fully visible on screen
   function snapIntoView(root) {
     const r = root.getBoundingClientRect();
-    const headSize = 70;
-    let left = r.left, top = r.top;
-    if (r.left < 0) left = 8;
-    if (r.top < 0) top = 8;
-    if (r.left > window.innerWidth - headSize)  left = window.innerWidth - headSize - 8;
-    if (r.top  > window.innerHeight - headSize) top  = window.innerHeight - headSize - 8;
-    if (left !== r.left || top !== r.top) {
-      root.style.left = left + 'px';
-      root.style.top  = top + 'px';
+    const pos = clampPosition(r.left, r.top);
+    if (Math.abs(pos.left - r.left) > 1 || Math.abs(pos.top - r.top) > 1) {
+      root.style.left = pos.left + 'px';
+      root.style.top  = pos.top + 'px';
       root.style.right = 'auto';
       root.style.bottom = 'auto';
     }
@@ -715,8 +720,10 @@
     state.lastCaptionTime = Date.now();
     state.captureActive  = true;   // capture from the first word
     if (!state.micStream) startAgentMic();      // agent voice (mic permission, no picker)
-    // Customer capture (tab audio) must be started by a user click — see startCustomerCapture.
-    // It's triggered from the ▶ TEST button and the "share audio" control, not here.
+    // CUSTOMER audio: native version taps ReadyMode's own call audio directly —
+    // no screen-share, no button. Try now and the periodic retry will catch it
+    // if the audio element isn't ready this instant.
+    if (!state.tabStream) tryCaptureReadymodeAudio();
 
     if (immediate) {
       // Force-start (testing): coach right away
