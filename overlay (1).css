@@ -1,0 +1,388 @@
+/* ═══════════════════════════════════════════════════════════════════
+   James - TL  —  Floating AI Coach Avatar
+   IA logo head + attaching speech bubble, draggable, minimizable
+   ═══════════════════════════════════════════════════════════════════ */
+
+#james-tl-root {
+  position: fixed;
+  bottom: 80px;
+  right: 24px;
+  z-index: 2147483647;
+  font-family: 'Google Sans', 'Segoe UI', system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 10px;
+  user-select: none;
+  max-height: calc(100vh - 40px);   /* never taller than the screen */
+  overflow: visible;
+  pointer-events: none;             /* let clicks pass except on children */
+}
+#james-tl-root > * { pointer-events: auto; }
+
+/* ── Speech bubble (above the head) ── */
+#jt-bubble {
+  position: relative;
+  max-width: 320px;
+  min-width: 200px;
+  max-height: 40vh;
+  overflow-y: auto;
+  background: #fff;
+  border-radius: 18px;
+  padding: 16px 18px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10);
+  opacity: 0;
+  transform: translateY(12px) scale(0.94);
+  transform-origin: bottom right;
+  transition: opacity 0.3s cubic-bezier(0.34,1.56,0.64,1), transform 0.3s cubic-bezier(0.34,1.56,0.64,1);
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+#jt-bubble.jt-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+/* Little tail connecting bubble to the head (bottom-right) */
+#jt-bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -8px;
+  right: 28px;
+  width: 18px;
+  height: 18px;
+  background: #fff;
+  transform: rotate(45deg);
+  box-shadow: 3px 3px 8px rgba(0,0,0,0.06);
+  border-radius: 0 0 4px 0;
+}
+
+/* Bubble header: AGENT TIP label + dismiss */
+#jt-bubble-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+#jt-bubble-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #5ba829;
+}
+
+#jt-bubble-label.jt-tactical  { color: #5ba829; }  /* green */
+#jt-bubble-label.jt-warn      { color: #d98a1f; }  /* amber */
+#jt-bubble-label.jt-urgent    { color: #d6453e; }  /* red - objection */
+#jt-bubble-label.jt-morale    { color: #3b82c4; }  /* blue - motivational */
+#jt-bubble-label.jt-debrief   { color: #7c5fc4; }  /* purple - post-call */
+
+#jt-bubble-close {
+  background: none;
+  border: none;
+  color: rgba(0,0,0,0.3);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  transition: color 0.15s;
+}
+#jt-bubble-close:hover { color: rgba(0,0,0,0.6); }
+
+#jt-bubble-text {
+  font-size: 15px;
+  font-weight: 450;
+  line-height: 1.5;
+  color: #1a1a1a;
+}
+
+/* Subtle accent strip on the left of the bubble by type */
+#jt-bubble.jt-type-tactical { border-left: 3px solid #5ba829; }
+#jt-bubble.jt-type-warn     { border-left: 3px solid #d98a1f; }
+#jt-bubble.jt-type-urgent   { border-left: 3px solid #d6453e; }
+#jt-bubble.jt-type-morale   { border-left: 3px solid #3b82c4; }
+#jt-bubble.jt-type-debrief  { border-left: 3px solid #7c5fc4; }
+
+/* ── Ask bubble (stacks ABOVE the tip bubble — answers to agent questions) ── */
+#jt-ask-bubble {
+  position: relative;
+  max-width: 320px;
+  min-width: 200px;
+  max-height: 40vh;
+  overflow-y: auto;
+  background: #f5f9ff;                 /* faint blue tint = "James answering you" */
+  border-radius: 18px;
+  padding: 16px 18px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10);
+  opacity: 0;
+  transform: translateY(12px) scale(0.94);
+  transform-origin: bottom right;
+  transition: opacity 0.3s cubic-bezier(0.34,1.56,0.64,1), transform 0.3s cubic-bezier(0.34,1.56,0.64,1);
+  pointer-events: none;
+  border-left: 3px solid #3b82c4;
+  flex-shrink: 0;
+}
+#jt-ask-bubble.jt-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+#jt-ask-bubble-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #3b82c4;
+}
+#jt-ask-bubble-text {
+  font-size: 15px;
+  font-weight: 450;
+  line-height: 1.5;
+  color: #1a1a1a;
+}
+
+/* ── The head (IA logo avatar) ── */
+#jt-head {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.20), 0 1px 4px rgba(0,0,0,0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  position: relative;
+  transition: transform 0.2s, box-shadow 0.2s;
+  flex-shrink: 0;
+}
+
+#jt-head:hover { transform: scale(1.06); }
+#jt-head:active { cursor: grabbing; }
+
+#jt-head img {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+/* Status ring around head */
+#jt-head::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2.5px solid transparent;
+  transition: border-color 0.4s;
+}
+
+#james-tl-root[data-state="active"]    #jt-head::before { border-color: #5ba829; animation: jt-pulse 2.5s ease-in-out infinite; }
+#james-tl-root[data-state="capturing"] #jt-head::before { border-color: #3b82c4; }
+#james-tl-root[data-state="waiting"]   #jt-head::before { border-color: #d98a1f; }
+#james-tl-root[data-state="break"]     #jt-head::before { border-color: rgba(150,150,150,0.5); }
+#james-tl-root[data-state="idle"]      #jt-head::before { border-color: rgba(91,168,41,0.3); }
+
+@keyframes jt-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+/* Thinking dots when James is generating */
+#jt-thinking {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  background: #5ba829;
+  border-radius: 10px;
+  padding: 3px 6px;
+  display: none;
+  align-items: center;
+  gap: 2px;
+}
+#jt-thinking.jt-show { display: flex; }
+#jt-thinking span {
+  width: 4px; height: 4px; border-radius: 50%; background: #fff;
+  animation: jt-bounce 1.2s infinite;
+}
+#jt-thinking span:nth-child(2) { animation-delay: 0.2s; }
+#jt-thinking span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes jt-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.5; }
+  40%            { transform: translateY(-4px); opacity: 1; }
+}
+
+/* Notification dot when minimized + new tip waiting */
+#jt-notif-dot {
+  position: absolute;
+  top: -2px; right: -2px;
+  width: 14px; height: 14px;
+  background: #d6453e;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  display: none;
+}
+#jt-notif-dot.jt-show { display: block; }
+
+/* Status label below head (tiny) */
+#jt-status-mini {
+  position: absolute;
+  top: 70px;
+  right: 0;
+  font-size: 10px;
+  color: rgba(0,0,0,0.45);
+  background: rgba(255,255,255,0.9);
+  padding: 2px 7px;
+  border-radius: 8px;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+#jt-status-mini.jt-show { opacity: 1; }
+
+/* ── Ask panel (opens when head clicked) ── */
+#jt-ask-panel {
+  background: #fff;
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  width: 300px;
+  max-width: calc(100vw - 40px);
+  max-height: 60vh;
+  overflow-y: auto;
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+}
+#jt-ask-panel.jt-open { display: flex; }
+
+#jt-ask-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #5ba829;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#jt-ask-title button {
+  background: none; border: none; color: rgba(0,0,0,0.3);
+  font-size: 16px; cursor: pointer;
+}
+
+#jt-quick-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.jt-quick-btn {
+  text-align: left;
+  background: #f4f7f0;
+  border: 0.5px solid #d8e6c8;
+  border-radius: 9px;
+  padding: 9px 12px;
+  font-size: 13px;
+  color: #2a4a10;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+.jt-quick-btn:hover { background: #e8f1dc; }
+
+#jt-ask-input-row {
+  display: flex;
+  gap: 6px;
+}
+#jt-ask-input {
+  flex: 1;
+  border: 0.5px solid #ddd;
+  border-radius: 9px;
+  padding: 9px 11px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+#jt-ask-input:focus { border-color: #5ba829; }
+#jt-ask-send {
+  background: #5ba829;
+  border: none;
+  border-radius: 9px;
+  padding: 0 14px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#jt-ask-send:hover { background: #4d9122; }
+
+/* ── Controls row (under head, small) — only show on hover ── */
+#jt-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  opacity: 1;                /* always visible — no more hunting for hover */
+  transition: opacity 0.2s;
+  pointer-events: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 320px;
+}
+.jt-ctrl-btn {
+  background: rgba(255,255,255,0.96);
+  border: 0.5px solid rgba(0,0,0,0.08);
+  border-radius: 99px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  color: #5ba829;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.10);
+  transition: opacity 0.15s, transform 0.1s;
+  font-family: inherit;
+}
+.jt-ctrl-btn:hover { opacity: 0.85; transform: translateY(-1px); }
+.jt-ctrl-btn:active { transform: translateY(0); }
+.jt-ctrl-btn[data-off="true"] { color: #d6453e; }
+
+/* The customer-share button — the important one, make it pop */
+#jt-customer-btn {
+  background: #5ba829;
+  color: #fff;
+  border-color: #5ba829;
+}
+#jt-customer-btn[data-off="true"] {
+  background: #d6453e;
+  color: #fff;
+  border-color: #d6453e;
+}
+
+/* Minimized state — hide bubble/controls, keep just head */
+#james-tl-root.jt-minimized #jt-bubble,
+#james-tl-root.jt-minimized #jt-controls,
+#james-tl-root.jt-minimized #jt-ask-panel,
+#james-tl-root.jt-minimized #jt-status-mini {
+  display: none !important;
+}
+
+/* Debug line (temporary, remove for production) */
+#jt-debug {
+  font-size: 9px;
+  font-family: monospace;
+  color: rgba(0,0,0,0.4);
+  background: rgba(255,255,255,0.85);
+  padding: 2px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+  max-width: 320px;
+  overflow: hidden;
+}
+#james-tl-root.jt-minimized #jt-debug { display: none; }
