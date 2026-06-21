@@ -1,390 +1,1416 @@
-/* ═══════════════════════════════════════════════════════════════════
-   James - TL  —  Floating AI Coach Avatar
-   IA logo head + attaching speech bubble, draggable, minimizable
-   ═══════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   James - TL  v4.0  —  Floating AI Sales Coach
+   - IA logo avatar + speech bubble (proactive coaching)
+   - Tactical + motivational + emotional support
+   - Ask James (quick buttons + typed questions)
+   - Post-call debrief with solidity judgment
+   - Per-agent learning loop (Vercel)
+   - Break/pause aware via Readymode mode dropdown
+   ═══════════════════════════════════════════════════════════════════════════ */
 
-#james-tl-root {
-  position: fixed;
-  bottom: 80px;
-  right: 24px;
-  z-index: 2147483647;
-  font-family: 'Google Sans', 'Segoe UI', system-ui, sans-serif;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  justify-content: flex-end;
-  gap: 10px;
-  user-select: none;
-  max-height: calc(100vh - 40px);   /* never taller than the screen */
-  overflow: visible;
-  pointer-events: none;             /* let clicks pass except on children */
-}
-#james-tl-root > * { pointer-events: auto; }
+(() => {
+  const IS_TOP_FRAME = (window === window.top);
 
-/* ── Speech bubble (above the head) ── */
-#jt-bubble {
-  position: relative;
-  max-width: min(320px, calc(100vw - 40px));   /* never wider than the screen */
-  min-width: 200px;
-  max-height: 40vh;
-  overflow-y: auto;
-  background: #fff;
-  border-radius: 18px;
-  padding: 16px 18px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10);
-  opacity: 0;
-  transform: translateY(12px) scale(0.94);
-  transform-origin: bottom right;
-  transition: opacity 0.3s cubic-bezier(0.34,1.56,0.64,1), transform 0.3s cubic-bezier(0.34,1.56,0.64,1);
-  pointer-events: none;
-  flex-shrink: 0;
-}
+  // ── RE-INJECTION GUARD ──────────────────────────────────────────────────────
+  // The ReadyMode script tab (Contact History) may re-run this code on every new
+  // lead. James should load exactly ONCE per page and keep floating across leads,
+  // so bail out if we've already booted in this window.
+  if (IS_TOP_FRAME && window.__jamesTLLoaded) {
+    return;
+  }
+  if (IS_TOP_FRAME) { window.__jamesTLLoaded = true; }
 
-#jt-bubble.jt-visible {
-  opacity: 1;
-  transform: translateY(0) scale(1);
-  pointer-events: auto;
-}
+  // ── CHILD FRAME: nothing to do. ────────────────────────────────────────────
+  // The old approach scraped DOM captions in child frames. We now capture the
+  // agent's mic once in the top frame and transcribe via Whisper, so child
+  // frames don't need to do anything. (Avoids duplicate/garbage captions.)
+  if (!IS_TOP_FRAME) {
+    return;
+  }
 
-/* Little tail connecting bubble to the head (bottom-right) */
-#jt-bubble::after {
-  content: '';
-  position: absolute;
-  bottom: -8px;
-  right: 28px;
-  width: 18px;
-  height: 18px;
-  background: #fff;
-  transform: rotate(45deg);
-  box-shadow: 3px 3px 8px rgba(0,0,0,0.06);
-  border-radius: 0 0 4px 0;
-}
+  // ══════════════════════════════════════════════════════════════════════════
+  // TOP FRAME — full James
+  // ══════════════════════════════════════════════════════════════════════════
 
-/* Bubble header: AGENT TIP label + dismiss */
-#jt-bubble-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
+  const CONFIG = {
+    CAPTURE_START_MS:  3000,    // start listening shortly after a call connects
+    COACH_START_MS:    8000,    // give the call a moment before first possible tip
+    COACH_INTERVAL_MS: 8000,    // James READS every 8s; only SPEAKS when needed
+    CHUNK_MS:          8000,    // 8s audio chunks → good accuracy + ~8-10s lag
+    BUBBLE_LIFETIME_MS: 24000,  // proactive tips stay 24s (was too fast before)
+    ASK_LIFETIME_MS:   38000,   // ask answers stay longer — you asked, read it
+    IDLE_END_MS:       45000,   // no captions for this long = call ended
+  };
 
-#jt-bubble-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: #5ba829;
-}
+  // ── Groq proxied through Deno Deploy — the key NEVER lives in the browser.
+  //    Deno has no Cloudflare WAF in front, so the 1010 nonsense doesn't apply:
+  //    clean paths, headers, and bodies all work. Key sits as a Deno env var.
+  const JAMES_KEY       = 'iaremo-james-9fK3nQ7wL2mP6vXc4bRj8sHy5dTz';
+  const PROXY_BASE      = 'https://jamestl.iaremodelings.deno.net';
+  const GROQ_ENDPOINT   = PROXY_BASE + '/chat';
+  const GROQ_TRANSCRIBE = PROXY_BASE + '/audio';
+  const GROQ_MODEL      = 'openai/gpt-oss-120b';
+  const WHISPER_MODEL   = 'whisper-large-v3-turbo';
+  const PROFILES_BASE = 'https://vlm-report.vercel.app/api/profiles';
+  // Live dashboard pivot — real-time agent stats (source of truth)
+  const PIVOT_BASE  = 'https://taylor-convenience-likelihood-populations.trycloudflare.com/pivot';
+  const PIVOT_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiIsImFnZW50X25hbWUiOm51bGwsImZ1bGxfbmFtZSI6IkFkbWluIiwic2NvcGUiOiJwZXJtYW5lbnQifQ.Vbr0FEFUWwmAX6LgL_POoCpyeHQHHWhq_RC89m3k330';
 
-#jt-bubble-label.jt-tactical  { color: #5ba829; }  /* green */
-#jt-bubble-label.jt-warn      { color: #d98a1f; }  /* amber */
-#jt-bubble-label.jt-urgent    { color: #d6453e; }  /* red - objection */
-#jt-bubble-label.jt-morale    { color: #3b82c4; }  /* blue - motivational */
-#jt-bubble-label.jt-debrief   { color: #7c5fc4; }  /* purple - post-call */
+  // Headers for proxy calls — NO Groq key (Deno server holds it). The shared
+  // secret goes in a header (Deno has no WAF blocking custom headers).
+  // withJson=true adds Content-Type for chat; audio (multipart) sets its own boundary.
+  function jamesHeaders(withJson) {
+    const h = {};
+    if (JAMES_KEY) h['x-james-key'] = JAMES_KEY;
+    if (withJson) h['Content-Type'] = 'application/json';
+    return h;
+  }
 
-#jt-bubble-close {
-  background: none;
-  border: none;
-  color: rgba(0,0,0,0.3);
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 2px;
-  transition: color 0.15s;
-}
-#jt-bubble-close:hover { color: rgba(0,0,0,0.6); }
+  let state = {
+    callStartTime:   null,
+    callId:          null,
+    captureActive:   false,
+    coachingActive:  false,
+    jamesEnabled:    true,
+    onBreak:         false,
+    armed:           false,
+    captionBuffer:   [],
+    fullTranscript:  [],
+    coachInterval:   null,
+    lastCaptionTime: null,
+    recentTips:      [],
+    bubbleTimer:     null,
+    askBubbleTimer:  null,
+    minimized:       false,
+    askOpen:         false,
+    speechRecognition: null,
+    // agent profile
+    agentName:       '',
+    coachingContext: '',
+    weakSpots:       [],
+    pressure:        'average',
+    weekSolid:       0, weekVlm: 0, qSolid: 0, qVlm: 0,
+    profileLoaded:   false,
+    // learning loop
+    adviceLog:       [],   // {advice, moment} given this call
+    lastDisposition: '',
+    coachingMemory:  null,
+    agentTurns:      0,
+    customerTurns:   0,
+    pivotStats:      null,  // today's live stats from dashboard pivot
+    baseline:        null,  // rolling 21-day strengths/weaknesses
+    micStream:       null,  // active microphone stream
+    micRecorder:     null,  // active MediaRecorder for mic
+    tabStream:       null,  // active tab-capture stream (customer)
+    tabRecorder:     null,  // active MediaRecorder for tab
+    tabAudioCtx:     null   // audio context to keep tab audible
+  };
 
-#jt-bubble-text {
-  font-size: 15px;
-  font-weight: 450;
-  line-height: 1.5;
-  color: #1a1a1a;
-}
+  // debug counters
+  let dbgCaptions = 0, dbgReqs = 0, dbgTips = 0, dbgErr = '';
 
-/* Subtle accent strip on the left of the bubble by type */
-#jt-bubble.jt-type-tactical { border-left: 3px solid #5ba829; }
-#jt-bubble.jt-type-warn     { border-left: 3px solid #d98a1f; }
-#jt-bubble.jt-type-urgent   { border-left: 3px solid #d6453e; }
-#jt-bubble.jt-type-morale   { border-left: 3px solid #3b82c4; }
-#jt-bubble.jt-type-debrief  { border-left: 3px solid #7c5fc4; }
+  // ── TESTING HOOK: window.postMessage force-start, bypasses everything ──────
+  window.addEventListener('message', (e) => {
+    if (e.data && e.data.__jamesForceStart) {
+      state.testMode = true;       // test mode disables break auto-detection
+      state.jamesEnabled = true;
+      state.armed = true;
+      state.onBreak = false;
+      state.callStartTime = null;
+      startCall(true);
+      const el = document.getElementById('jt-debug');
+      if (el) el.textContent = 'FORCE-START fired — ' + el.textContent;
+    }
+  });
 
-/* ── Ask bubble (stacks ABOVE the tip bubble — answers to agent questions) ── */
-#jt-ask-bubble {
-  position: relative;
-  max-width: min(320px, calc(100vw - 40px));
-  min-width: 200px;
-  max-height: 40vh;
-  overflow-y: auto;
-  background: #f5f9ff;                 /* faint blue tint = "James answering you" */
-  border-radius: 18px;
-  padding: 16px 18px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10);
-  opacity: 0;
-  transform: translateY(12px) scale(0.94);
-  transform-origin: bottom right;
-  transition: opacity 0.3s cubic-bezier(0.34,1.56,0.64,1), transform 0.3s cubic-bezier(0.34,1.56,0.64,1);
-  pointer-events: none;
-  border-left: 3px solid #3b82c4;
-  flex-shrink: 0;
-}
-#jt-ask-bubble.jt-visible {
-  opacity: 1;
-  transform: translateY(0) scale(1);
-  pointer-events: auto;
-}
-#jt-ask-bubble-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: #3b82c4;
-}
-#jt-ask-bubble-text {
-  font-size: 15px;
-  font-weight: 450;
-  line-height: 1.5;
-  color: #1a1a1a;
-}
+  // ── localStorage-backed settings (in-page; no chrome.* APIs available) ──────
+  const JStore = {
+    get(key, dflt) {
+      try { const v = localStorage.getItem('jamestl_' + key); return v === null ? dflt : JSON.parse(v); }
+      catch (_) { return dflt; }
+    },
+    set(key, val) {
+      try { localStorage.setItem('jamestl_' + key, JSON.stringify(val)); } catch (_) {}
+    }
+  };
 
-/* ── The head (IA logo avatar) ── */
-#jt-head {
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 4px 18px rgba(0,0,0,0.20), 0 1px 4px rgba(0,0,0,0.12);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: grab;
-  position: relative;
-  transition: transform 0.2s, box-shadow 0.2s;
-  flex-shrink: 0;
-}
+  // ── INIT ────────────────────────────────────────────────────────────────────
+  (function init() {
+    state.jamesEnabled = JStore.get('jamesEnabled', true) !== false;
+    state.minimized    = JStore.get('jamesMinimized', false) === true;
+    const savedName = JStore.get('agentName', '');
+    if (savedName) { state.agentName = savedName; loadAgentProfile(savedName); }
+    buildAvatar();
+    observeCaptions();
+    startAgentMic();
+    detectReadymodeState();
+    autoDetectAgentName();
+    setInterval(updateDebug, 1000);
+    // Debug line is hidden for agents. YOU can toggle it on/off while monitoring
+    // with Ctrl+Shift+J (e.g. during the floor test).
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'J' || e.key === 'j')) {
+        const dbg = document.getElementById('jt-debug');
+        if (dbg) dbg.style.display = (dbg.style.display === 'none') ? 'block' : 'none';
+      }
+    });
+    // Native bonus: keep trying to grab ReadyMode's call audio directly, so the
+    // agent never has to click anything. Re-checks every few seconds; grabs as
+    // soon as a live call audio element appears, and again after each new call.
+    setInterval(() => {
+      if (!state.jamesEnabled) return;
+      if (!state.tabStream) tryCaptureReadymodeAudio();
+    }, 4000);
+  })();
 
-#jt-head:hover { transform: scale(1.06); }
-#jt-head:active { cursor: grabbing; }
+  // ── BUILD THE FLOATING AVATAR ────────────────────────────────────────────────
+  function buildAvatar() {
+    if (document.getElementById('james-tl-root')) return;
+    // Inject our stylesheet (served from Deno) since there's no extension manifest
+    // to load overlay.css for us.
+    if (!document.getElementById('james-tl-style')) {
+      const link = document.createElement('link');
+      link.id = 'james-tl-style';
+      link.rel = 'stylesheet';
+      link.href = 'https://cdn.jsdelivr.net/gh/Kikie7/james-tl@main/overlay.css';
+      document.head.appendChild(link);
+    }
+    const root = document.createElement('div');
+    root.id = 'james-tl-root';
+    root.dataset.state = 'idle';
+    if (state.minimized) root.classList.add('jt-minimized');
 
-#jt-head img {
-  width: 44px;
-  height: 44px;
-  object-fit: contain;
-  pointer-events: none;
-}
+    root.innerHTML = `
+      <div id="jt-ask-bubble" class="jt-type-tactical">
+        <div id="jt-bubble-header">
+          <span id="jt-ask-bubble-label" class="jt-tactical">James Says</span>
+          <button id="jt-ask-bubble-close" title="Dismiss">×</button>
+        </div>
+        <div id="jt-ask-bubble-text"></div>
+      </div>
 
-/* Status ring around head */
-#jt-head::before {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-  border: 2.5px solid transparent;
-  transition: border-color 0.4s;
-}
+      <div id="jt-bubble" class="jt-type-tactical">
+        <div id="jt-bubble-header">
+          <span id="jt-bubble-label" class="jt-tactical">Agent Tip</span>
+          <button id="jt-bubble-close" title="Dismiss">×</button>
+        </div>
+        <div id="jt-bubble-text"></div>
+      </div>
 
-#james-tl-root[data-state="active"]    #jt-head::before { border-color: #5ba829; animation: jt-pulse 2.5s ease-in-out infinite; }
-#james-tl-root[data-state="capturing"] #jt-head::before { border-color: #3b82c4; }
-#james-tl-root[data-state="waiting"]   #jt-head::before { border-color: #d98a1f; }
-#james-tl-root[data-state="break"]     #jt-head::before { border-color: rgba(150,150,150,0.5); }
-#james-tl-root[data-state="idle"]      #jt-head::before { border-color: rgba(91,168,41,0.3); }
+      <div id="jt-ask-panel">
+        <div id="jt-ask-title">Ask James <button id="jt-ask-close">×</button></div>
+        <div id="jt-quick-btns">
+          <button class="jt-quick-btn" data-q="How do I handle this objection right now?">How do I handle this objection?</button>
+          <button class="jt-quick-btn" data-q="Help me close and lock the appointment now.">Help me close this</button>
+          <button class="jt-quick-btn" data-q="How do I build rapport with this customer?">How do I build rapport?</button>
+          <button class="jt-quick-btn" data-q="What protocol items am I still missing on this call?">What am I missing?</button>
+        </div>
+        <div id="jt-ask-input-row">
+          <input id="jt-ask-input" type="text" placeholder="Ask James anything..." />
+          <button id="jt-ask-send">Ask</button>
+        </div>
+      </div>
 
-@keyframes jt-pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.4; }
-}
+      <div id="jt-controls">
+        <button class="jt-ctrl-btn" id="jt-min-btn" title="Minimize / expand">MIN</button>
+        <button class="jt-ctrl-btn" id="jt-toggle-btn" title="Turn James on/off">ON</button>
+      </div>
 
-/* Thinking dots when James is generating */
-#jt-thinking {
-  position: absolute;
-  bottom: -2px;
-  right: -2px;
-  background: #5ba829;
-  border-radius: 10px;
-  padding: 3px 6px;
-  display: none;
-  align-items: center;
-  gap: 2px;
-}
-#jt-thinking.jt-show { display: flex; }
-#jt-thinking span {
-  width: 4px; height: 4px; border-radius: 50%; background: #fff;
-  animation: jt-bounce 1.2s infinite;
-}
-#jt-thinking span:nth-child(2) { animation-delay: 0.2s; }
-#jt-thinking span:nth-child(3) { animation-delay: 0.4s; }
-@keyframes jt-bounce {
-  0%, 80%, 100% { transform: translateY(0); opacity: 0.5; }
-  40%            { transform: translateY(-4px); opacity: 1; }
-}
+      <div id="jt-head" title="Click to ask James">
+        <img src="https://cdn.jsdelivr.net/gh/Kikie7/james-tl@main/icon128.png" alt="James" />
+        <div id="jt-thinking"><span></span><span></span><span></span></div>
+        <div id="jt-notif-dot"></div>
+        <div id="jt-status-mini"></div>
+      </div>
 
-/* Notification dot when minimized + new tip waiting */
-#jt-notif-dot {
-  position: absolute;
-  top: -2px; right: -2px;
-  width: 14px; height: 14px;
-  background: #d6453e;
-  border: 2px solid #fff;
-  border-radius: 50%;
-  display: none;
-}
-#jt-notif-dot.jt-show { display: block; }
+      <div id="jt-debug" style="display:none;"></div>
+    `;
+    document.body.appendChild(root);
 
-/* Status label below head (tiny) */
-#jt-status-mini {
-  position: absolute;
-  top: 70px;
-  right: 0;
-  font-size: 10px;
-  color: rgba(0,0,0,0.45);
-  background: rgba(255,255,255,0.9);
-  padding: 2px 7px;
-  border-radius: 8px;
-  white-space: nowrap;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.3s;
-}
-#jt-status-mini.jt-show { opacity: 1; }
+    // Head click → toggle ask panel (or expand if minimized)
+    document.getElementById('jt-head').addEventListener('click', (e) => {
+      if (state._dragging) return;
+      if (state.minimized) { toggleMinimize(); return; }
+      toggleAskPanel();
+    });
 
-/* ── Ask panel (opens when head clicked) ── */
-#jt-ask-panel {
-  background: #fff;
-  border-radius: 16px;
-  padding: 14px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
-  width: 300px;
-  max-width: calc(100vw - 40px);
-  max-height: 60vh;
-  overflow-y: auto;
-  display: none;
-  flex-direction: column;
-  gap: 10px;
-}
-#jt-ask-panel.jt-open { display: flex; }
+    // Double-click head → reset to default bottom-right corner (escape hatch if lost)
+    document.getElementById('jt-head').addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      root.style.left = 'auto';
+      root.style.top = 'auto';
+      root.style.right = '20px';
+      root.style.bottom = '20px';
+      setAskOpen(false);
+      showMiniStatus('Reset to corner');
+    });
 
-#jt-ask-title {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #5ba829;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-#jt-ask-title button {
-  background: none; border: none; color: rgba(0,0,0,0.3);
-  font-size: 16px; cursor: pointer;
-}
+    document.getElementById('jt-bubble-close').addEventListener('click', hideBubble);
+    document.getElementById('jt-ask-bubble-close').addEventListener('click', hideAskBubble);
+    document.getElementById('jt-ask-close').addEventListener('click', () => setAskOpen(false));
+    document.getElementById('jt-min-btn').addEventListener('click', toggleMinimize);
+    document.getElementById('jt-toggle-btn').addEventListener('click', toggleEnabled);
 
-#jt-quick-btns {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.jt-quick-btn {
-  text-align: left;
-  background: #f4f7f0;
-  border: 0.5px solid #d8e6c8;
-  border-radius: 9px;
-  padding: 9px 12px;
-  font-size: 13px;
-  color: #2a4a10;
-  cursor: pointer;
-  font-family: inherit;
-  transition: background 0.15s;
-}
-.jt-quick-btn:hover { background: #e8f1dc; }
+    document.querySelectorAll('.jt-quick-btn').forEach(btn => {
+      btn.addEventListener('click', () => askJames(btn.dataset.q));
+    });
+    document.getElementById('jt-ask-send').addEventListener('click', () => {
+      const inp = document.getElementById('jt-ask-input');
+      if (inp.value.trim()) { askJames(inp.value.trim()); inp.value = ''; }
+    });
+    document.getElementById('jt-ask-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const v = e.target.value.trim();
+        if (v) { askJames(v); e.target.value = ''; }
+      }
+    });
 
-#jt-ask-input-row {
-  display: flex;
-  gap: 6px;
-}
-#jt-ask-input {
-  flex: 1;
-  border: 0.5px solid #ddd;
-  border-radius: 9px;
-  padding: 9px 11px;
-  font-size: 13px;
-  font-family: inherit;
-  outline: none;
-}
-#jt-ask-input:focus { border-color: #5ba829; }
-#jt-ask-send {
-  background: #5ba829;
-  border: none;
-  border-radius: 9px;
-  padding: 0 14px;
-  color: #fff;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-#jt-ask-send:hover { background: #4d9122; }
+    makeDraggable(document.getElementById('jt-head'), root);
+    updateHeadState();
+  }
 
-/* ── Controls row (under head, small) — only show on hover ── */
-#jt-controls {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  opacity: 0;                /* hidden at rest — reveal on hover for a clean look */
-  transition: opacity 0.2s;
-  pointer-events: auto;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  max-width: 320px;
-}
-/* Reveal the controls when hovering anywhere over James */
-#james-tl-root:hover #jt-controls { opacity: 1; }
-.jt-ctrl-btn {
-  background: rgba(255,255,255,0.96);
-  border: 0.5px solid rgba(0,0,0,0.08);
-  border-radius: 99px;
-  padding: 6px 12px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  cursor: pointer;
-  color: #5ba829;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.10);
-  transition: opacity 0.15s, transform 0.1s;
-  font-family: inherit;
-}
-.jt-ctrl-btn:hover { opacity: 0.85; transform: translateY(-1px); }
-.jt-ctrl-btn:active { transform: translateY(0); }
-.jt-ctrl-btn[data-off="true"] { color: #d6453e; }
+  // ── DRAGGABLE ────────────────────────────────────────────────────────────────
+  function makeDraggable(handle, root) {
+    let sx, sy, sl, st;
+    handle.addEventListener('mousedown', (e) => {
+      state._dragging = false;
+      sx = e.clientX; sy = e.clientY;
+      const r = root.getBoundingClientRect();
+      sl = r.left; st = r.top;
+      const move = (ev) => {
+        const dx = ev.clientX - sx, dy = ev.clientY - sy;
+        if (Math.abs(dx) > 4 || Math.abs(dy) > 4) state._dragging = true;
+        const pos = clampPosition(sl + dx, st + dy);
+        root.style.left = pos.left + 'px';
+        root.style.top  = pos.top + 'px';
+        root.style.right = 'auto';
+        root.style.bottom = 'auto';
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        setTimeout(() => { state._dragging = false; }, 50);
+        snapIntoView(root);
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+  }
 
-/* The customer-share button — the important one, make it pop */
-#jt-customer-btn {
-  background: #5ba829;
-  color: #fff;
-  border-color: #5ba829;
-}
-#jt-customer-btn[data-off="true"] {
-  background: #d6453e;
-  color: #fff;
-  border-color: #d6453e;
-}
+  // Compute a safe position for the avatar's top-left such that BOTH the head AND
+  // any speech bubble (which appears ABOVE and to the LEFT of the head) stay fully
+  // on screen. This is why a tip near an edge no longer pushes James out of frame.
+  function clampPosition(left, top) {
+    const headSize   = 70;
+    // Reserve room for the bubble that pops above the head.
+    const bubbleW    = 340;   // max bubble width + a little margin
+    const bubbleH    = Math.min(window.innerHeight * 0.40, 320) + 30; // max bubble height + tail/gap
+    const margin     = 8;
+    // The root is right-aligned: its right edge sits near the head's right edge.
+    // Horizontal: the bubble extends LEFT from the right edge, so the left edge of
+    // the whole widget must stay >= margin. Keep the head's right edge within view.
+    const minLeft = margin + (bubbleW - headSize); // leave bubble room on the left
+    const maxLeft = window.innerWidth - headSize - margin;
+    // Vertical: the bubble sits ABOVE the head, so the head's top must stay far
+    // enough down that the bubble fits above it.
+    const minTop = margin + bubbleH;              // leave bubble room above
+    const maxTop = window.innerHeight - headSize - margin;
+    return {
+      left: Math.max(Math.min(minLeft, maxLeft), Math.min(left, maxLeft)),
+      top:  Math.max(Math.min(minTop, maxTop),  Math.min(top, maxTop)),
+    };
+  }
 
-/* Minimized state — hide bubble/controls, keep just head */
-#james-tl-root.jt-minimized #jt-bubble,
-#james-tl-root.jt-minimized #jt-controls,
-#james-tl-root.jt-minimized #jt-ask-panel,
-#james-tl-root.jt-minimized #jt-status-mini {
-  display: none !important;
-}
+  // Ensure the avatar AND its bubble are always fully visible on screen
+  function snapIntoView(root) {
+    const r = root.getBoundingClientRect();
+    const pos = clampPosition(r.left, r.top);
+    if (Math.abs(pos.left - r.left) > 1 || Math.abs(pos.top - r.top) > 1) {
+      root.style.left = pos.left + 'px';
+      root.style.top  = pos.top + 'px';
+      root.style.right = 'auto';
+      root.style.bottom = 'auto';
+    }
+  }
 
-/* Debug line (temporary, remove for production) */
-#jt-debug {
-  font-size: 9px;
-  font-family: monospace;
-  color: rgba(0,0,0,0.4);
-  background: rgba(255,255,255,0.85);
-  padding: 2px 6px;
-  border-radius: 5px;
-  white-space: nowrap;
-  max-width: 320px;
-  overflow: hidden;
-}
-#james-tl-root.jt-minimized #jt-debug { display: none; }
+  // Re-snap on window resize so it never gets stranded off-screen
+  window.addEventListener('resize', () => {
+    const root = document.getElementById('james-tl-root');
+    if (root) snapIntoView(root);
+  });
+
+  // ── UI STATE HELPERS ─────────────────────────────────────────────────────────
+  function root() { return document.getElementById('james-tl-root'); }
+
+  function updateHeadState() {
+    const r = root(); if (!r) return;
+    let s = 'idle';
+    if (state.onBreak) s = 'break';
+    else if (state.coachingActive) s = 'active';
+    else if (state.captureActive) s = 'capturing';
+    else if (state.callStartTime) s = 'waiting';
+    r.dataset.state = state.jamesEnabled ? s : 'idle';
+    const tb = document.getElementById('jt-toggle-btn');
+    if (tb) { tb.textContent = state.jamesEnabled ? 'ON' : 'OFF'; tb.dataset.off = state.jamesEnabled ? 'false' : 'true'; }
+  }
+
+  function showMiniStatus(text) {
+    const el = document.getElementById('jt-status-mini');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.add('jt-show');
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.classList.remove('jt-show'), 4000);
+  }
+
+  function toggleMinimize() {
+    state.minimized = !state.minimized;
+    root().classList.toggle('jt-minimized', state.minimized);
+    JStore.set('jamesMinimized', state.minimized);
+    if (state.minimized) { setAskOpen(false); }
+    else { document.getElementById('jt-notif-dot').classList.remove('jt-show'); }
+  }
+
+  function toggleEnabled() {
+    state.jamesEnabled = !state.jamesEnabled;
+    JStore.set('jamesEnabled', state.jamesEnabled);
+    updateHeadState();
+    if (state.jamesEnabled) {
+      // Turning ON manually force-starts a coaching session (works for testing with recordings)
+      state.armed = true;
+      if (!state.callStartTime) startCall();
+      showMiniStatus('Coaching started');
+    } else {
+      endCall(false);
+      hideBubble();
+      state.armed = false;
+    }
+  }
+
+  function toggleAskPanel() { setAskOpen(!state.askOpen); }
+  function setAskOpen(open) {
+    state.askOpen = open;
+    document.getElementById('jt-ask-panel').classList.toggle('jt-open', open);
+  }
+
+  // ── SPEECH BUBBLE ────────────────────────────────────────────────────────────
+  // type: tactical | warn | urgent | morale | debrief
+  const LABELS = {
+    tactical: 'Agent Tip', warn: 'Watch This', urgent: 'Act Now',
+    morale: 'From James', debrief: 'Call Debrief'
+  };
+
+  function showBubble(type, text, persist) {
+    const bubble = document.getElementById('jt-bubble');
+    const label  = document.getElementById('jt-bubble-label');
+    const txt    = document.getElementById('jt-bubble-text');
+    if (!bubble) return;
+
+    if (state.minimized) {
+      document.getElementById('jt-notif-dot').classList.add('jt-show');
+      showMiniStatus(text.length > 40 ? text.slice(0,38) + '…' : text);
+      return;
+    }
+
+    bubble.className = `jt-type-${type}`;
+    label.className  = `jt-${type}`;
+    label.textContent = LABELS[type] || 'Agent Tip';
+    txt.textContent = text;
+
+    requestAnimationFrame(() => requestAnimationFrame(() => bubble.classList.add('jt-visible')));
+
+    clearTimeout(state.bubbleTimer);
+    if (!persist) {
+      state.bubbleTimer = setTimeout(hideBubble, CONFIG.BUBBLE_LIFETIME_MS);
+    }
+  }
+
+  function hideBubble() {
+    const bubble = document.getElementById('jt-bubble');
+    if (bubble) bubble.classList.remove('jt-visible');
+    clearTimeout(state.bubbleTimer);
+  }
+
+  // Separate bubble for ask-James answers — stacks above the tip bubble,
+  // so a proactive tip and an answer to a question can show at the same time.
+  function showAskBubble(type, text, persist) {
+    const bubble = document.getElementById('jt-ask-bubble');
+    const label  = document.getElementById('jt-ask-bubble-label');
+    const txt    = document.getElementById('jt-ask-bubble-text');
+    if (!bubble) return;
+
+    if (state.minimized) {
+      document.getElementById('jt-notif-dot').classList.add('jt-show');
+      showMiniStatus(text.length > 40 ? text.slice(0,38) + '…' : text);
+      return;
+    }
+
+    bubble.className = `jt-type-${type}`;
+    label.className  = `jt-${type}`;
+    label.textContent = 'James Says';
+    txt.textContent = text;
+    requestAnimationFrame(() => requestAnimationFrame(() => bubble.classList.add('jt-visible')));
+
+    clearTimeout(state.askBubbleTimer);
+    if (!persist) {
+      // Answers to questions stay longer — the agent asked, give them time to read
+      state.askBubbleTimer = setTimeout(hideAskBubble, CONFIG.ASK_LIFETIME_MS);
+    }
+  }
+
+  function hideAskBubble() {
+    const bubble = document.getElementById('jt-ask-bubble');
+    if (bubble) bubble.classList.remove('jt-visible');
+    clearTimeout(state.askBubbleTimer);
+  }
+
+  function setThinking(on) {
+    const t = document.getElementById('jt-thinking');
+    if (t) t.classList.toggle('jt-show', on);
+  }
+
+  // ── AGENT NAME AUTO-DETECT ─────────────────────────────────────────────────
+  function autoDetectAgentName() {
+    const sels = ['[class*="agent-name"]','[class*="user-name"]','[class*="username"]',
+      '[class*="profile-name"]','[id*="agent-name"]','[id*="username"]','.navbar .user','[data-agent-name]'];
+    const tryD = () => {
+      for (const s of sels) {
+        const el = document.querySelector(s);
+        if (el) {
+          const n = (el.getAttribute('data-agent-name') || el.textContent || '').trim();
+          if (n && n.length > 2 && n.length < 50 && /[a-zA-Z]/.test(n) && !n.includes('@') && !/^\d+$/.test(n)) {
+            if (n !== state.agentName) {
+              state.agentName = n;
+              JStore.set('agentName', n);
+              showMiniStatus(`${n} detected`);
+              setTimeout(() => loadAgentProfile(n), 1200);
+            }
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+    if (tryD()) return;
+    let a = 0;
+    const p = setInterval(() => { if (tryD() || ++a > 15) clearInterval(p); }, 2000);
+  }
+
+  // ── LOAD AGENT PROFILE (direct fetch) ──────────────────────────────────────
+  async function loadAgentProfile(name) {
+    if (!name || name.length < 2) return;
+    let res = null;
+    try {
+      const r = await fetch(`${PROFILES_BASE}?name=${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(6000) });
+      res = await r.json();
+    } catch (_) { res = { found: false }; }
+
+    if (res?.found) {
+      state.coachingContext = res.coaching_context || '';
+      state.weakSpots = res.weak_spots || [];
+      state.pressure  = res.pressure || 'average';
+      state.weekSolid = res.week?.solid || 0; state.weekVlm = res.week?.vlm || 0;
+      state.qSolid = res.quincena?.solid || 0; state.qVlm = res.quincena?.vlm || 0;
+      state.coachingMemory = res.coaching_memory || null;
+      state.profileLoaded = true;
+      showMiniStatus(`${res.name}: ${state.weekSolid}S ${state.weekVlm}V wk`);
+    } else {
+      state.profileLoaded = false;
+      showMiniStatus(`${name} — ready`);
+    }
+
+    // Also pull LIVE stats from the dashboard pivot (today's real numbers)
+    loadPivotStats(name);
+    // And the rolling 21-day baseline to establish strengths/weaknesses
+    loadPivotBaseline(name);
+  }
+
+  // ── Fetch live agent stats from the dashboard pivot (TODAY) ────────────────
+  async function loadPivotStats(name) {
+    if (!name) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const url = `${PIVOT_BASE}?start_date=${today}&end_date=${today}&is_active=all&token=${PIVOT_TOKEN}`;
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      const arr = await r.json();
+      if (!Array.isArray(arr)) return;
+      const row = matchAgentRow(arr, name);
+      if (!row) return;
+
+      const meetings  = row.meetings || 0;
+      const solids    = row.solids || 0;
+      const showups   = row.showups || 0;
+      const calls     = row.calls || 0;
+      const answered  = row.answered_calls || 0;
+      const effective = row.effective_calls || 0;
+      const solidRate = meetings ? Math.round(solids / meetings * 100) : 0;
+
+      state.pivotStats = {
+        calls, answered, effective, meetings, solids, showups, solidRate,
+        summary: `TODAY'S LIVE STATS for ${name}: ${calls} dials, ${answered} answered, ${meetings} meetings set, ${solids} SOLID (${solidRate}% of meetings solid), ${showups} showups, ${effective} effective calls.`
+      };
+      showMiniStatus(`${name.split(' ')[0]}: ${meetings}mtg ${solids}solid today`);
+    } catch (_) {}
+  }
+
+  // ── Fetch rolling 21-day baseline to establish strengths/weaknesses ────────
+  async function loadPivotBaseline(name) {
+    if (!name) return;
+    const end = new Date();
+    const start = new Date(); start.setDate(start.getDate() - 21);
+    const s = start.toISOString().slice(0,10), e = end.toISOString().slice(0,10);
+    const url = `${PIVOT_BASE}?start_date=${s}&end_date=${e}&is_active=all&token=${PIVOT_TOKEN}`;
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      const arr = await r.json();
+      if (!Array.isArray(arr)) return;
+
+      // The pivot may return one row per day per agent — sum them for this agent
+      const key = name.trim().toLowerCase();
+      const rows = arr.filter(a => {
+        const an = (a.agent_name||'').trim().toLowerCase();
+        return an === key || (an.includes(key.split(' ')[0]) && an.includes(key.split(' ').slice(-1)[0]));
+      });
+      if (!rows.length) return;
+
+      const sum = (f) => rows.reduce((t,x)=>t+(x[f]||0),0);
+      const calls = sum('calls'), answered = sum('answered_calls'), meetings = sum('meetings'),
+            solids = sum('solids'), showups = sum('showups'), effective = sum('effective_calls'),
+            sales = sum('sales');
+      const days = new Set(rows.map(x=>x.call_date)).size || 1;
+
+      const solidRate   = meetings ? Math.round(solids/meetings*100) : 0;
+      const setRate     = answered ? Math.round(meetings/answered*100) : 0;   // meetings per answered call
+      const showupRate  = meetings ? Math.round(showups/meetings*100) : 0;
+      const avgMeetings = Math.round(meetings/days*10)/10;
+
+      // Build a strength/weakness read from the baseline
+      const strengths = [], weaknesses = [];
+      if (setRate >= 8) strengths.push('strong at setting meetings from answered calls'); else if (setRate <= 3) weaknesses.push('low meeting-set rate — struggles to convert answered calls into meetings');
+      if (solidRate >= 60) strengths.push('high solid rate — meetings they set tend to be solid'); else if (solidRate <= 35 && meetings >= 5) weaknesses.push('low solid rate — meetings often not solid (likely one-leggers or weak qualifying)');
+      if (showupRate >= 50) strengths.push('good showup rate'); else if (showupRate <= 20 && meetings >= 5) weaknesses.push('low showup rate — appointments not sticking');
+
+      state.baseline = {
+        days, avgMeetings, solidRate, setRate, showupRate,
+        summary: `${name}'s ${days}-day BASELINE: ~${avgMeetings} meetings/day, ${setRate}% set rate (meetings per answered call), ${solidRate}% solid rate, ${showupRate}% showup rate over ${meetings} meetings. ` +
+          (strengths.length ? `STRENGTHS: ${strengths.join('; ')}. ` : '') +
+          (weaknesses.length ? `WEAKNESSES: ${weaknesses.join('; ')}.` : '')
+      };
+    } catch (_) {}
+  }
+
+  function matchAgentRow(arr, name) {
+    const key = name.trim().toLowerCase();
+    return arr.find(a => (a.agent_name||'').trim().toLowerCase() === key)
+        || arr.find(a => {
+             const an = (a.agent_name||'').trim().toLowerCase();
+             return an.includes(key.split(' ')[0]) && an.includes(key.split(' ').slice(-1)[0]);
+           });
+  }
+
+  // ── READYMODE STATE: break detection + call detection ──────────────────────
+  function detectReadymodeState() {
+    setInterval(() => {
+      if (state.testMode) return;   // test mode: don't let auto-detection interfere
+
+      // 1) Break / mode detection — read the mode dropdown
+      const mode = readReadymodeMode();
+      const wasBreak = state.onBreak;
+      state.onBreak = (mode === 'break');
+      if (state.onBreak && !wasBreak) {
+        endCall(false);
+        hideBubble();
+        setAskOpen(false);
+        updateHeadState();
+        showMiniStatus('On break — paused');
+      } else if (!state.onBreak && wasBreak) {
+        updateHeadState();
+        showMiniStatus('Back — listening');
+      }
+      if (state.onBreak) return;
+
+      // 2) Call active detection
+      const active = isCallActive();
+      if (active && !state.armed) {
+        state.armed = true;
+        startCall();
+      } else if (!active && state.armed && state.callStartTime) {
+        state.armed = false;
+        const dispo = readDisposition();
+        setTimeout(() => endCall(true, dispo), 1500);
+      }
+    }, 3000);
+
+    // Idle fallback — no captions for a long time = call ended
+    setInterval(() => {
+      if (state.testMode) return;
+      if (!state.callStartTime || !state.lastCaptionTime) return;
+      if (Date.now() - state.lastCaptionTime > CONFIG.IDLE_END_MS) {
+        endCall(true, readDisposition());
+      }
+    }, 5000);
+  }
+
+  function readReadymodeMode() {
+    // The mode dropdown shows: Prep work, Ready, Break, Meeting, Last call, Inbound only
+    // Readymode has MANY dropdowns — only trust one whose option set matches the mode list.
+    const modeWords = ['prep work','ready','break','meeting','last call','inbound only'];
+    const selects = document.querySelectorAll('select');
+    for (const sel of selects) {
+      const opts = Array.from(sel.options || []).map(o => (o.text||'').toLowerCase().trim());
+      const matchCount = opts.filter(o => modeWords.includes(o)).length;
+      if (matchCount >= 3) {  // this is the real mode dropdown
+        const val = (sel.value || sel.options?.[sel.selectedIndex]?.text || '').toLowerCase().trim();
+        return val === 'break' ? 'break' : (val || null);
+      }
+    }
+    return null;  // mode dropdown not found — assume NOT on break
+  }
+
+  function isCallActive() {
+    // Primary: Readymode "Phone Status:" text
+    const bt = document.body.innerText || '';
+    const m = bt.match(/Phone Status:\s*([^\n]+)/i);
+    if (m) {
+      const s = m[1].toLowerCase();
+      if (/on call|connected|in progress|talking|live|in-call|oncall/.test(s)) return true;
+      if (/ready|denied|disconnect|idle|waiting|hangup|hung up|no phone/.test(s)) return false;
+    }
+    // Secondary: visible call-active elements
+    for (const sel of ['[class*="on-call"]','[class*="oncall"]','[class*="call-active"]','[class*="in-call"]','[class*="active-call"]']) {
+      const el = document.querySelector(sel);
+      if (el && el.offsetParent !== null) return true;
+    }
+    return false;
+  }
+
+  function readDisposition() {
+    // Read which call result was selected (Meeting Set, VLM, etc.)
+    // Look for highlighted/selected disposition button or a result field
+    const dispoSelectors = [
+      '[class*="disposition"] [class*="selected"]',
+      '[class*="call-result"] [class*="active"]',
+      '.selected-disposition', '[class*="result-selected"]'
+    ];
+    for (const s of dispoSelectors) {
+      const el = document.querySelector(s);
+      if (el && el.textContent.trim()) return el.textContent.trim();
+    }
+    // Also check the Solidity field we saw in the contact panel
+    const bt = document.body.innerText || '';
+    const sol = bt.match(/Solid[iy]ty:\s*([^\n]+)/i);
+    if (sol) return 'Solidity: ' + sol[1].trim();
+    return '';
+  }
+
+  // (Frame relay listener removed — agent mic via Whisper is the only audio source now.)
+
+  // ── CALL LIFECYCLE ────────────────────────────────────────────────────────────
+  function startCall(immediate) {
+    if (!state.jamesEnabled || state.onBreak) return;
+    state.callStartTime  = Date.now();
+    state.callId         = 'call_' + Date.now();
+    state.captionBuffer  = [];
+    state.fullTranscript = [];
+    state.recentTips     = [];
+    state.adviceLog      = [];
+    state.agentTurns     = 0;
+    state.customerTurns  = 0;
+    state.lastCaptionTime = Date.now();
+    state.captureActive  = true;   // capture from the first word
+    if (!state.micStream) startAgentMic();      // agent voice (mic permission, no picker)
+    // CUSTOMER audio: native version taps ReadyMode's own call audio directly —
+    // no screen-share, no button. Try now and the periodic retry will catch it
+    // if the audio element isn't ready this instant.
+    if (!state.tabStream) tryCaptureReadymodeAudio();
+
+    if (immediate) {
+      // Force-start (testing): coach right away
+      state.coachingActive = true;
+      updateHeadState();
+      startCoachingLoop();
+      return;
+    }
+
+    // Capture is on; coaching activates in onSpeech once a real 2-way exchange is detected
+    state.coachingActive = false;
+    updateHeadState();
+    showMiniStatus('Listening...');
+  }
+
+  async function endCall(doDebrief, disposition) {
+    if (!state.callStartTime) return;
+    const transcript = state.fullTranscript.join('\n');
+    const advice = [...state.recentTips];
+    state.callStartTime = null;
+    state.captureActive = false;
+    state.coachingActive = false;
+    if (state.coachInterval) { clearInterval(state.coachInterval); state.coachInterval = null; }
+    updateHeadState();
+
+    // Post-call debrief + solidity judgment + learning
+    if (doDebrief && transcript.length > 50 && state.jamesEnabled) {
+      await runDebrief(transcript, advice, disposition || '');
+    }
+  }
+
+  // ── CAPTION / SPEECH HANDLING ──────────────────────────────────────────────
+  // ── AUDIO CAPTURE via Groq Whisper ──────────────────────────────────────────
+  // Captures the agent's mic in ~12s chunks, sends each to Groq Whisper, feeds text in.
+  // (Chrome Live Caption can't be read by page scripts, so we transcribe audio ourselves.)
+
+  // observeCaptions is now a no-op — we no longer scrape the DOM for captions.
+  // Kept as a stub so existing init() calls don't break.
+  function observeCaptions() { /* replaced by Whisper audio capture */ }
+
+  function isSpeech(t) {
+    if (t.length < 4 || t.length > 500) return false;
+    if (/^\d+$/.test(t)) return false;
+    if (/^[^a-zA-Z]+$/.test(t)) return false;
+    return true;
+  }
+
+  // Start capturing the agent's microphone and transcribing via Whisper
+  async function startAgentMic() {
+    if (state.micStream) return; // already running
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 }
+      });
+      state.micStream = stream;
+      beginChunkedCapture(stream, 'Agent');
+      showMiniStatus('Mic on — transcribing');
+    } catch (err) {
+      // Permission denied or no mic — James still loads, just can't hear
+      dbgErr = 'mic:' + (err.name || 'denied');
+      console.warn('[James] mic capture failed:', err);
+    }
+  }
+
+  function stopAgentMic() {
+    try {
+      if (state.micRecorder && state.micRecorder.state !== 'inactive') state.micRecorder.stop();
+      if (state.micStream) state.micStream.getTracks().forEach(t => t.stop());
+    } catch (_) {}
+    state.micStream = null;
+    state.micRecorder = null;
+  }
+
+  // ── CUSTOMER SIDE (native): tap ReadyMode's own call audio directly ──────────
+  // Running INSIDE ReadyMode's page, we can find the SIP phone's <audio> element
+  // (xenphone attaches the remote stream there) and capture it WITHOUT any
+  // screen-share picker. Falls back to getDisplayMedia only if no element is found.
+  async function startCustomerCapture() {
+    if (state.tabStream) return; // already running
+
+    // Try direct SIP audio first — no picker, no click needed.
+    const direct = tryCaptureReadymodeAudio();
+    if (direct) return;
+
+    // Fallback: screen-share picker (only if we couldn't find ReadyMode's audio)
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      });
+      stream.getVideoTracks().forEach(t => t.stop());
+      const audioTracks = stream.getAudioTracks();
+      if (!audioTracks.length) {
+        dbgErr = 'tab:no-audio';
+        showBubble('warn', 'No tab audio shared — when sharing, tick "Share tab audio".', false);
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
+      const audioStream = new MediaStream(audioTracks);
+      state.tabStream = audioStream;
+      audioTracks[0].addEventListener('ended', () => { stopCustomerCapture(); });
+      beginChunkedCapture(audioStream, 'Customer');
+      showMiniStatus('Customer audio ON ✓');
+      const cbtn = document.getElementById('jt-customer-btn');
+      if (cbtn) { cbtn.textContent = '✓ HEARING CUST'; cbtn.dataset.off = 'true'; }
+    } catch (err) {
+      dbgErr = 'tab:' + (err.name || 'denied');
+    }
+  }
+
+  // Hunt for ReadyMode's call-audio <audio> element and capture its stream.
+  // Returns true if it found and captured audio, false otherwise.
+  function tryCaptureReadymodeAudio() {
+    try {
+      const audios = Array.from(document.querySelectorAll('audio, video'));
+      // Find an audio element that actually has a live MediaStream (the call)
+      let target = null;
+      for (const el of audios) {
+        const s = el.srcObject;
+        if (s && typeof s.getAudioTracks === 'function' && s.getAudioTracks().length) {
+          // prefer one that's playing / has enabled tracks
+          if (s.getAudioTracks().some(t => t.enabled && t.readyState === 'live')) {
+            target = el; break;
+          }
+          if (!target) target = el;
+        }
+      }
+      if (!target || !target.srcObject) return false;
+
+      const callStream = target.srcObject;
+      const audioStream = new MediaStream(callStream.getAudioTracks());
+      state.tabStream = audioStream;
+      state.tabIsDirect = true;
+
+      // If the call ends and the track dies, clean up so the next call re-grabs.
+      const t0 = audioStream.getAudioTracks()[0];
+      if (t0) t0.addEventListener('ended', () => { stopCustomerCapture(); });
+
+      beginChunkedCapture(audioStream, 'Customer');
+      showMiniStatus('Hearing customer (direct) ✓');
+      const cbtn = document.getElementById('jt-customer-btn');
+      if (cbtn) { cbtn.textContent = '✓ HEARING CUST'; cbtn.dataset.off = 'true'; }
+      console.log('[James] captured ReadyMode call audio directly — no screen-share');
+      return true;
+    } catch (err) {
+      console.warn('[James] direct audio capture failed, will fall back:', err);
+      return false;
+    }
+  }
+
+  // ── (legacy screen-share path kept above as fallback) ──────────────────────
+  async function _unusedScreenShareStub() {
+    if (state.tabStream) return;
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false
+        }
+      });
+
+      // We only need audio — stop the video track immediately to save resources
+      stream.getVideoTracks().forEach(t => t.stop());
+
+      const audioTracks = stream.getAudioTracks();
+      if (!audioTracks.length) {
+        dbgErr = 'tab:no-audio';
+        showBubble('warn', 'No tab audio shared — when sharing, tick "Share tab audio".', false);
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
+
+      // Build an audio-only stream from the shared audio track
+      const audioStream = new MediaStream(audioTracks);
+      state.tabStream = audioStream;
+
+      // If the agent stops sharing via Chrome's bar, clean up
+      audioTracks[0].addEventListener('ended', () => { stopCustomerCapture(); });
+
+      beginChunkedCapture(audioStream, 'Customer');
+      showMiniStatus('Customer audio ON ✓');
+      const cbtn = document.getElementById('jt-customer-btn');
+      if (cbtn) { cbtn.textContent = '✓ HEARING CUST'; cbtn.dataset.off = 'true'; }
+    } catch (err) {
+      // User cancelled the picker, or not allowed
+      dbgErr = 'tab:' + (err.name || 'fail');
+      console.warn('[James] tab capture failed:', err);
+    }
+  }
+
+  function stopCustomerCapture() {
+    try {
+      if (state.tabStream) state.tabStream.getTracks().forEach(t => t.stop());
+      if (state.tabAudioCtx) state.tabAudioCtx.close();
+    } catch (_) {}
+    state.tabStream = null;
+    state.tabAudioCtx = null;
+    const cbtn = document.getElementById('jt-customer-btn');
+    if (cbtn) { cbtn.textContent = '🔊 CUSTOMER'; cbtn.dataset.off = 'false'; }
+  }
+
+  // Records audio in repeating ~12s chunks; each chunk → Whisper → onSpeech
+  function beginChunkedCapture(stream, speaker) {
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+               : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
+               : MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '';
+
+    // Is this stream still supposed to be running?
+    const stillLive = () => speaker === 'Agent' ? !!state.micStream : !!state.tabStream;
+
+    const startOne = () => {
+      if (!stillLive()) return;
+      let chunks = [];
+      let rec;
+      try { rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+      catch (_) { rec = new MediaRecorder(stream); }
+      if (speaker === 'Agent') state.micRecorder = rec; else state.tabRecorder = rec;
+
+      rec.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+      rec.onstop = async () => {
+        const blob = new Blob(chunks, { type: mime || 'audio/webm' });
+        chunks = [];
+        if (blob.size > 2000 && (state.captureActive || state.testMode)) {
+          transcribeChunk(blob, speaker);
+        }
+        if (stillLive()) startOne();  // continuous
+      };
+
+      rec.start();
+      setTimeout(() => { try { if (rec.state !== 'inactive') rec.stop(); } catch(_){} }, CONFIG.CHUNK_MS);
+    };
+
+    startOne();
+  }
+
+  // Send one audio chunk to Whisper, feed the transcript to onSpeech
+  async function transcribeChunk(blob, speaker) {
+    try {
+      const form = new FormData();
+      form.append('file', blob, 'chunk.webm');
+      form.append('model', WHISPER_MODEL);
+      form.append('response_format', 'text');
+      form.append('language', 'en');
+      form.append('temperature', '0');  // most literal transcription, less hallucination
+      // NOTE: deliberately NOT sending a 'prompt' — Whisper was echoing the prompt
+      // text into the transcript as if it were spoken. No prompt = no leak.
+
+      const r = await fetch(GROQ_TRANSCRIBE, {
+        method: 'POST',
+        headers: jamesHeaders(false),
+        body: form,
+        signal: AbortSignal.timeout(15000)
+      });
+      if (!r.ok) { dbgErr = 'whisper:' + r.status; return; }
+      let text = (await r.text()).trim();
+      if (!text || text.length < 3) return;
+      if (!isRealSpeech(text)) return;  // drop silence artifacts & hallucinations
+      dbgErr = '';
+      onSpeech(text, speaker);
+    } catch (err) {
+      dbgErr = 'whisper:' + (err.name === 'TimeoutError' ? 'timeout' : 'err');
+    }
+  }
+
+  // Filters out Whisper's known junk: silence fillers, prompt echoes, and
+  // the repetitive hallucinations it produces on unclear/overlapping audio.
+  function isRealSpeech(text) {
+    const t = text.toLowerCase().trim();
+    // Silence/filler artifacts Whisper emits on quiet audio
+    if (/^(you|thank you\.?|thanks for watching\.?|bye\.?|\.|\s|\u266a|\[.*\])+$/i.test(text)) return false;
+    // Prompt-echo leaks (domain hint bleeding into output)
+    if (/home improvement sales call|plenty of resources for your house/i.test(t)) return false;
+    // Known repetitive hallucinations on this audio setup
+    const hallucinations = [
+      "i'm going to go to the office",
+      "i'm going to go to the next slide",
+      "i'm going to go ahead and get a little bit of a break",
+      "i want to see you in the next video",
+      "i'll see you next time",
+      "i'm going to go to the morning"
+    ];
+    if (hallucinations.includes(t.replace(/[.,!?]+$/,''))) return false;
+    // Pure repetition of a single word (e.g. "no no no no no")
+    const words = t.split(/\s+/);
+    if (words.length >= 4 && new Set(words).size === 1) return false;
+    return true;
+  }
+
+  function onSpeech(text, speaker) {
+    dbgCaptions++;
+    state.lastCaptionTime = Date.now();
+    if (state.onBreak) return;
+
+    // A real call begins the moment we're armed and hear speech — capture starts immediately
+    if (!state.callStartTime) { if (state.armed || state.testMode) startCall(); else return; }
+
+    const tagged = `${speaker}: ${text}`;
+    const last = state.fullTranscript[state.fullTranscript.length - 1];
+    if (last === tagged) return;
+    console.log('%c[James] heard:', 'color:#3b82c4', tagged);
+    state.fullTranscript.push(tagged);
+    state.captionBuffer.push(tagged);
+    if (state.fullTranscript.length > 250) state.fullTranscript.shift();
+
+    // Track exchanges to detect a REAL two-way conversation (not voicemail/dead air)
+    if (speaker === 'Agent') state.agentTurns++;
+    else state.customerTurns++;
+
+    // Engage coaching once it's a genuine back-and-forth:
+    // customer has actually responded at least twice (rules out voicemail/agent monologue)
+    if (!state.coachingActive && !state.testMode) {
+      if (state.customerTurns >= 2 && state.agentTurns >= 2) {
+        state.coachingActive = true;
+        updateHeadState();
+        startCoachingLoop();
+        showMiniStatus('Live conversation — coaching');
+      }
+    }
+  }
+
+  // ── PROACTIVE COACHING LOOP ────────────────────────────────────────────────
+  function startCoachingLoop() {
+    if (state.coachInterval) clearInterval(state.coachInterval);
+    state.coachInterval = setInterval(async () => {
+      if (!state.coachingActive || !state.jamesEnabled || state.onBreak) return;
+      const chunk = [...new Set(state.captionBuffer)].join(' ').trim();
+      state.captionBuffer = [];
+      if (chunk.length < 15) return;
+      dbgReqs++;
+      console.log('%c[James] CHUNK being sent:', 'color:#5ba829;font-weight:bold', chunk);
+      console.log('%c[James] FULL transcript tail:', 'color:#888', state.fullTranscript.slice(-8).join(' | '));
+      await getCoachingTip(chunk);
+    }, CONFIG.COACH_INTERVAL_MS);
+  }
+
+  function buildProfileBlock() {
+    const nameRef = state.agentName ? `Agent name: ${state.agentName}.` : '';
+    const perf = state.profileLoaded && state.coachingContext ? state.coachingContext : '';
+    const weak = state.weakSpots?.length ? `Known weak spots this week: ${state.weakSpots.slice(0,3).join(', ')}.` : '';
+    const tone = !state.profileLoaded ? 'No history yet — coach fundamentals.'
+      : state.pressure === 'struggling' ? `Struggling this week (${state.weekSolid}S/${state.weekVlm}V). Be direct but encouraging.`
+      : state.pressure === 'performing' ? `Performing well (${state.weekSolid}S/${state.weekVlm}V). Reinforce, keep momentum.`
+      : `Average (${state.weekSolid}S/${state.weekVlm}V). Push for consistency.`;
+    let mem = '';
+    if (state.coachingMemory?.recent_reflections?.length) {
+      mem = `What you learned coaching this agent before (apply it): ${state.coachingMemory.recent_reflections.join(' ')}`;
+    }
+    // Live pivot stats — today's real numbers
+    const live = state.pivotStats?.summary || '';
+    // 21-day baseline — strengths/weaknesses and how today compares
+    const base = state.baseline?.summary || '';
+    let compare = '';
+    if (state.pivotStats && state.baseline) {
+      const t = state.pivotStats.solidRate, b = state.baseline.solidRate;
+      if (b && t < b - 15) compare = `NOTE: today's solid rate (${t}%) is BELOW their ${b}% norm — something may be off today, coach accordingly.`;
+      else if (b && t > b + 15) compare = `NOTE: today's solid rate (${t}%) is ABOVE their ${b}% norm — they're on fire, keep them going.`;
+    }
+    return `${nameRef}\n${perf}\n${weak}\n${tone}\n${mem}\n${base}\n${live}\n${compare}`;
+  }
+
+  const PROTOCOL_BLOCK = `
+━━━ SOLID APPOINTMENT CHECKLIST ━━━
+NON-NEGOTIABLE (no SOLID without these):
+• ALL homeowners present — if two homeowners exist, BOTH must be there. Only one = "one-legger" = NOT solid (e.g. wife present but husband alive & well and absent).
+• Detailed specific SERVICE — exactly which service (windows, solar, roofing, bathroom, kitchen, siding, curtains, etc.), scope, and the real need. Vague = not solid. Do NOT assume the service — it's whatever this lead is about.
+
+HEAVILY WEIGHTED (strong solid signals):
+• Appointment date & time locked • Address confirmed • Homeownership confirmed • 1-hour arrival window explained ("between 4-5, not exactly 4, due to traffic") • Dispatch confirmation (customer MUST answer the confirm call/text)
+
+NICE TO HAVE (good practice, won't sink a solid):
+• 2nd phone number • Email for promos • HOA membership • Open insurance claim • Credit score (680+ = offer discount)
+
+SOLID = both homeowners present + detailed service + 80%+ of the rest covered.
+
+━━━ THE WINNING PLAYBOOK (how our best closers book solids — coach toward THIS) ━━━
+These are the exact moves that book appointments here. When you coach, push the agent toward these:
+• FREE, NO OBLIGATION — say it early and often: "free quote, no obligation," "no charge, no commission." It melts cold-call resistance.
+• CONFIRM ADDRESS FROM "THE SYSTEM" — a power move that confirms the address AND signals legitimacy: "My system shows you at [address] — is that correct?" or "I can pull it up, just verify it for me."
+• HOMEOWNER CONFIRM VIA LEGITIMACY — tie it to being licensed/bonded: "Since we're licensed and bonded, I've got the homeowner info — so it'll be you AND [other homeowner] there, right?" Always lock BOTH homeowners.
+• 1-HOUR ARRIVAL WINDOW — never an exact time: "I'll put you between 5:30 and 6:30" / "give me the hour window."
+• "I'LL CALL BEFORE I SHOW UP" — every solid ends with this dispatch confirmation. Make sure the agent says it.
+• ALWAYS ASK HOA + INSURANCE — "You're not under an HOA?" and "This is out of pocket, not an insurance claim, right?"
+• ASSUMPTIVE CLOSE — never "do you want to book?" Instead: "I'll put you down for 5 o'clock."
+• PRICE OBJECTION ("my buddy/someone does it cheaper") — don't fold: "Does your buddy have time for you? He's probably swamped." Then: "It's a FREE estimate — let me show you my best price, cash or financing." Pivot back to the free visit.
+• "NOT RIGHT NOW" → FREEZE THE PRICE: "We freeze the price — call me when you're ready, even months out." Keeps the door open and still books a soft visit.
+• MENTION FINANCING as a closer: "cash, financing, or half and half."`;
+
+  const PERSONA_BLOCK = `
+You are James, a sharp, supportive but FIRM sales TEAM LEADER coaching agents at a home-improvement call center that offers MULTIPLE services (windows, solar, roofing, bathrooms, kitchens, siding, curtains, and more). NEVER assume the service is windows — read the transcript and coach around whatever the agent is actually pitching. If the service isn't clear yet, coach the agent to pin it down.
+
+IMPORTANT — agents do NOT name their company on these calls. They pitch as a local licensed contractor/handyman. Do NOT tell the agent to say a company name, and never reference "IA Remodeling" or any brand in your tips.
+
+━━━ CRITICAL: HOW TO READ THE TRANSCRIPT ━━━
+The transcript comes from imperfect live audio capture. The "Agent:" and "Customer:" labels are UNRELIABLE — they are often wrong or swapped, and lines may be garbled or duplicated. DO NOT trust the labels. Instead, read the WHOLE conversation as one flow and use common sense to follow what's happening:
+- The person PITCHING, asking qualifying questions, and trying to book the appointment is the AGENT (the one you're coaching).
+- The person being sold to, asking about price, giving their address, saying "let me talk to my family" is the CLIENT.
+- A name like "this is Mason" belongs to the AGENT introducing themselves — never assume it's the client's name.
+- If a line looks garbled or like a transcription error, ignore it and focus on the clear parts.
+- When unsure who said something, just coach the agent on what to do next — say "the client" / "she" / "he" for the customer, and don't use the agent's name.
+
+Read for the GIST of where the call is, not word-by-word. Your job is to coach the agent's next move based on the overall situation.
+
+These are mostly COLD CALLS. Expect resistance, brush-offs, and people who didn't ask to be called. Your job: help the agent turn a cold lead into a SOLID booked appointment.
+
+You coach the WHOLE call from the very first exchanges:
+- OPENING: if the agent's open is weak/flat, coach it ("That open was flat — ask how their day's going, warm them up before pitching").
+- BRUSH-OFF: the instant the customer resists ("not interested", "who is this", "how'd you get my number", "I'm busy", "take me off your list"), give the EXACT rebuttal line to keep them on ("I hear you — quick question first, what made you think about improving your home recently?").
+- QUALIFYING & PROTOCOL: coach toward the solid checklist as it develops.
+- CLOSE: push the assumptive close when they're warm.
+
+STRATEGY-SHIFTING: You track what's working in THIS call. If the agent keeps doing something that isn't landing — repeating an ask, pushing a line the customer keeps dodging — call it out and change the play: "You've asked for credit score three times, they're dodging — drop it, build trust, circle back." Also connect to their HISTORY: if their profile shows a recurring pattern and it's happening again, name it: "Same over-pushing on price as usual — ease off, let them talk."
+
+VOICE — supportive but firm. On their side AND straight with them:
+- Encouraging: "Slow down, breathe, this one's yours."
+- Firm when it's not working: "That's not landing. Stop. Here's what we do instead..."
+- Honest after a rough one: "That client was rough — shake it off. Next one."
+- Celebrate real wins: "That's how you do it — now lock the date."
+Never wishy-washy, never demeaning. Direct, warm, in their corner.
+
+SALES FRAMEWORK (Straight Line / Wolf of Wall Street): assume the sale, rapport first, flip every objection into a reason to meet, create urgency, assumptive close, never let silence kill momentum.`;
+
+  async function getCoachingTip(recentText) {
+    const fullContext = state.fullTranscript.join('\n').slice(-2800);
+    const already = state.recentTips?.length
+      ? `\nTIPS ALREADY GIVEN THIS CALL (do NOT repeat/rephrase — if the agent ignored one and it still matters, escalate to a STRATEGY SHIFT instead):\n${state.recentTips.slice(-6).map(t=>`- ${t}`).join('\n')}` : '';
+
+    // Track call phase — by conversation turns, with transcript length as fallback
+    // (recordings come through as one speaker, so turns alone won't advance — use length too)
+    const turns = state.agentTurns + state.customerTurns;
+    const lines = state.fullTranscript.length;
+    const depth = Math.max(turns, lines);  // whichever shows more progress
+    let phase, phaseGuide;
+    if (depth <= 4) {
+      phase = 'OPENING';
+      phaseGuide = 'Call just started. The opening still matters — coach warmth/hook if weak.';
+    } else if (depth <= 12) {
+      phase = 'QUALIFYING';
+      phaseGuide = 'Past the opening — DO NOT coach the opening anymore, that moment has passed. Coach qualifying: service specifics, homeowners, building the case, handling resistance.';
+    } else {
+      phase = 'CLOSING';
+      phaseGuide = 'Deep into the call — the opening is LONG gone, never mention it. Focus on closing: lock date/time, confirm non-negotiables (all homeowners, service detail), arrival window, dispatch. Push the assumptive close.';
+    }
+
+    const prompt = `${PERSONA_BLOCK}
+
+${buildProfileBlock()}
+${PROTOCOL_BLOCK}
+
+CURRENT CALL PHASE: ${phase}
+${phaseGuide}
+
+FULL CALL TRANSCRIPT SO FAR (mixed audio — both speakers, may be mislabeled):
+"${fullContext}"
+
+WHAT WAS JUST SAID (last few seconds):
+"${recentText}"
+${already}
+
+━━━ HOW A REAL TEAM LEADER COACHES ━━━
+You're whispering in the agent's ear mid-call. A great TL does NOT talk constantly — most of the time the agent is fine, let them work. Filler is WORSE than silence.
+
+ONE THING AT A TIME. Never cram multiple checklist items into one tip. A real TL says "get the address now" — not "get the address and confirm both homeowners and explain the window and ask about HOA." Pick the SINGLE most important next move for this exact moment and coach just that. Crammed, listy advice is the #1 thing to avoid.
+
+GROUND IT IN THIS CALL. Your tip must reference what's actually happening right now in the transcript. If you can't point to a specific thing that just happened, stay silent ({"speak": false}).
+
+SOUND HUMAN, NOT LIKE A CHECKLIST. Coach the way our closers actually talk — smooth and natural. Compare:
+❌ ROBOTIC: "To give you an accurate free estimate I need your address and to confirm both homeowners will be present."
+✅ NATURAL: "He didn't give the address yet — say: 'Let me pull you up real quick, you're at...?'"
+❌ ROBOTIC: "You should build rapport and handle the objection about price."
+✅ NATURAL: "Price pushback. Don't flinch — 'It's totally free to look, no obligation. Worst case you get a number.'"
+
+MATCH WHERE THE CALL IS:
+- If the client is resisting/stalling → give the exact rebuttal line, nothing else.
+- If a key step got skipped (address, both homeowners, the hour window, "I'll call before I come") → nudge that ONE step, in the closer's natural voice.
+- If they're warm and it's time → push the assumptive close: "Lock it — 'I'll put you down for 5, I'll call before I head over.'"
+- If they're doing great → stay silent or a 3-word boost.
+
+THINK before you speak:
+- What's the ONE most valuable thing right now?
+- Did something specific just happen that needs a response?
+- Or is the agent fine and I should stay quiet?
+
+If nothing specific warrants it → {"speak": false}. Silence is right more often than not.
+
+Respond ONLY as JSON, no markdown:
+- Nothing to say: {"speak": false}
+- Real reason: {"speak": true, "type":"tactical|warn|urgent|morale", "tip":"ONE move, max 22 words, in a closer's natural voice. Give the actual words to say. Never invent the customer's name. Never assume the service."}
+
+When you speak, make it ONE sharp, natural, immediately-usable nudge — never a checklist.`;
+
+    setThinking(true);
+    try {
+      const r = await fetch(GROQ_ENDPOINT, {
+        method: 'POST',
+        headers: jamesHeaders(true),
+        body: JSON.stringify({ model: GROQ_MODEL, messages: [{role:'user',content:prompt}], max_tokens: 1500, temperature: 0.45, reasoning_effort: 'low', include_reasoning: false })
+      });
+      const data = await r.json();
+      setThinking(false);
+      if (data.error) { dbgErr = 'groq:' + (data.error.message||'').slice(0,40); return; }
+
+      const msg = data?.choices?.[0]?.message || {};
+      // GPT OSS may put text in content, or reasoning_content, or content may be an array
+      let raw = '';
+      if (typeof msg.content === 'string') raw = msg.content;
+      else if (Array.isArray(msg.content)) raw = msg.content.map(c => c.text || c.content || '').join(' ');
+      if (!raw && msg.reasoning_content) raw = msg.reasoning_content;
+      raw = (raw || '').trim();
+
+      if (!raw) { dbgErr = 'noraw:' + JSON.stringify(msg).slice(0,40); return; }
+
+      // Try to extract JSON from anywhere in the response
+      let parsed = null;
+      const cleaned = raw.replace(/```json|```/g, '').trim();
+      try { parsed = JSON.parse(cleaned); }
+      catch(_) {
+        // Find a JSON object inside the text
+        const m = cleaned.match(/\{[\s\S]*?\}/);
+        if (m) { try { parsed = JSON.parse(m[0]); } catch(_) {} }
+      }
+
+      // James decided to stay silent — respect it
+      if (parsed && parsed.speak === false) {
+        dbgErr = 'silent'; dbgTips = dbgTips;  // no tip, intentional
+        return;
+      }
+
+      let tip, type;
+      if (parsed && parsed.tip) {
+        tip = String(parsed.tip).trim();
+        type = ['tactical','warn','urgent','morale'].includes(parsed.type) ? parsed.type : 'tactical';
+      } else if (parsed && parsed.speak === undefined && !parsed.tip) {
+        // Malformed but no clear tip — stay silent rather than show junk
+        dbgErr = 'silent?';
+        return;
+      } else {
+        // No JSON at all — treat whole response as tip only if it looks like advice
+        const t = cleaned.replace(/^["']|["']$/g,'').replace(/^(tip|agent tip)[:\-\s]+/i,'').split('\n')[0].slice(0,180).trim();
+        if (t.length > 5 && !/^\{/.test(t)) { tip = t; type = 'tactical'; }
+        else { dbgErr = 'silent'; return; }
+      }
+
+      if (tip && tip.length > 2) {
+        dbgTips++; dbgErr = '';
+        state.recentTips.push(tip);
+        if (state.recentTips.length > 10) state.recentTips.shift();
+        state.adviceLog.push({ advice: tip, type });
+        showBubble(type, tip, false);
+      } else { dbgErr = 'silent'; }
+    } catch (e) { setThinking(false); dbgErr = 'fetch:' + (e.message||'').slice(0,30); }
+  }
+
+  // ── ASK JAMES (agent-initiated) ─────────────────────────────────────────────
+  async function askJames(question) {
+    setAskOpen(false);
+    setThinking(true);
+    showAskBubble('tactical', 'Thinking…', true);
+    const fullContext = state.fullTranscript.join('\n').slice(-2500);
+    const hasCall = state.fullTranscript.length > 2;
+    const lastBit = state.fullTranscript.slice(-6).join('\n');
+
+    const prompt = `${PERSONA_BLOCK}
+
+${buildProfileBlock()}
+${PROTOCOL_BLOCK}
+
+The agent is on a LIVE call RIGHT NOW and just asked you for help: "${question}"
+
+FULL CALL TRANSCRIPT SO FAR (Agent + Customer):
+"${fullContext || '(no transcript captured yet)'}"
+
+MOST RECENT EXCHANGE (what's happening this moment):
+"${lastBit || '(nothing yet)'}"
+
+${hasCall
+  ? 'ANSWER BASED ON THIS SPECIFIC CALL. When they ask "how do I handle this?" — "this" means the situation in the transcript above. Reference what the customer actually just said/did. Give the exact words or move for THIS moment. Do NOT give a generic opening script or textbook answer — they are mid-call, read where they are and respond to it.'
+  : 'The call has barely started or no transcript yet — give a brief practical answer to their question.'}
+
+Max 40 words. Warm, confident, firm TL voice. Never invent the customer's name.
+Respond ONLY as JSON: {"type":"tactical|urgent|morale","tip":"your answer grounded in this call"}`;
+
+    try {
+      const r = await fetch(GROQ_ENDPOINT, {
+        method: 'POST',
+        headers: jamesHeaders(true),
+        body: JSON.stringify({ model: GROQ_MODEL, messages:[{role:'user',content:prompt}], max_tokens: 1800, temperature: 0.5, reasoning_effort: 'low', include_reasoning: false })
+      });
+      const data = await r.json();
+      setThinking(false);
+      if (data.error) { showAskBubble('warn', 'Hmm, try again in a moment.', false); return; }
+      let raw = (data?.choices?.[0]?.message?.content || '').replace(/```json|```/g,'').trim();
+      let parsed; try { parsed = JSON.parse(raw); } catch(_) {
+        const m = raw.match(/\{[\s\S]*?\}/); if (m) { try { parsed = JSON.parse(m[0]); } catch(_){} }
+        if (!parsed) parsed = { type:'tactical', tip: raw.replace(/^["']|["']$/g,'').slice(0,220) };
+      }
+      const type = ['tactical','urgent','morale'].includes(parsed.type) ? parsed.type : 'tactical';
+      showAskBubble(type, parsed.tip || 'Here to help — keep going.', false);
+    } catch(_) { setThinking(false); showAskBubble('warn', 'Connection hiccup — try again.', false); }
+  }
+
+  // ── POST-CALL DEBRIEF + SOLIDITY JUDGMENT + LEARNING ──────────────────────
+  async function runDebrief(transcript, advice, disposition) {
+    setThinking(true);
+    const adviceList = advice.length ? advice.map(a=>`- ${a}`).join('\n') : '(no tips were given)';
+    const prompt = `${PERSONA_BLOCK}
+
+${PROTOCOL_BLOCK}
+
+A call just ENDED. Here is the full transcript:
+"${transcript.slice(-2500)}"
+
+${disposition ? `Readymode disposition/solidity field: "${disposition}"` : ''}
+Coaching tips James gave during this call:
+${adviceList}
+
+DO THREE THINGS:
+1. JUDGE SOLIDITY yourself from the transcript using the checklist. Decide: "solid" or "not_solid". Remember: both homeowners present is non-negotiable (one-legger = not solid), detailed service is non-negotiable. The disposition is a hint but YOUR protocol judgment decides.
+2. Give the agent a short, warm DEBRIEF — what went well + the single most important thing to improve next call. Be specific and encouraging, like a TL who wants them to win. (e.g. "Your opening was a little flat — next call open with how their day's going. But your close was strong, you locked the date well.")
+3. REFLECT on your own coaching: did your advice help? If the call wasn't solid, what should you coach differently for this agent next time?
+
+Respond ONLY as JSON, no markdown:
+{
+ "solidity":"solid|not_solid",
+ "reason":"one line why (e.g. only one homeowner present / both confirmed + service detailed)",
+ "debrief":"2-3 warm sentences to the agent: what was good + #1 fix",
+ "missing":["protocol items that were missed"],
+ "self_reflection":"one line: what James should coach differently next time for this agent"
+}`;
+
+    try {
+      const r = await fetch(GROQ_ENDPOINT, {
+        method: 'POST',
+        headers: jamesHeaders(true),
+        body: JSON.stringify({ model: GROQ_MODEL, messages:[{role:'user',content:prompt}], max_tokens: 2500, temperature: 0.4, reasoning_effort: 'medium', include_reasoning: false })
+      });
+      const data = await r.json();
+      setThinking(false);
+      if (data.error) return;
+      let raw = (data?.choices?.[0]?.message?.content||'').replace(/```json|```/g,'').trim();
+      let d; try { d = JSON.parse(raw); } catch(_) { return; }
+
+      // Show debrief in the bubble (persists so agent can read during wrap-up)
+      const solidEmoji = d.solidity === 'solid' ? '✓ Solid' : '○ Not solid yet';
+      const debriefText = `${solidEmoji} — ${d.reason || ''}\n\n${d.debrief || ''}`;
+      showBubble('debrief', debriefText, true);
+
+      // Write the learning back to Vercel (per-agent)
+      logCallOutcome(d, transcript, advice);
+    } catch(_) { setThinking(false); }
+  }
+
+  async function logCallOutcome(d, transcript, advice) {
+    if (!state.agentName) return;
+    try {
+      await fetch(`${PROFILES_BASE}/coaching`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({
+          name: state.agentName,
+          callId: state.callId,
+          solidity: d.solidity,
+          reason: d.reason,
+          missing: d.missing || [],
+          advice_given: advice,
+          self_reflection: d.self_reflection || '',
+          timestamp: new Date().toISOString()
+        }),
+        signal: AbortSignal.timeout(6000)
+      });
+    } catch(_) { /* non-fatal */ }
+  }
+
+  // ── DEBUG ─────────────────────────────────────────────────────────────────
+  function updateDebug() {
+    const el = document.getElementById('jt-debug');
+    if (!el) return;
+    if (state.minimized) return;
+    const md = state.onBreak ? 'BREAK' : (state.coachingActive ? 'coach' : 'off');
+    const en = state.jamesEnabled ? 'EN' : 'dis';
+    const k = 'proxy';
+    const tm = state.testMode ? 'TEST' : '';
+    const mic = state.micStream ? 'mic✓' : 'mic✗';
+    const tab = state.tabStream ? 'tab✓' : 'tab✗';
+    const lines = state.fullTranscript.length;
+    el.textContent = `${mic} ${tab} ${md} ${en} ${k} ${tm} lines:${lines} reqs:${dbgReqs} tips:${dbgTips}${dbgErr?' '+dbgErr:''}`;
+  }
+
+})();
