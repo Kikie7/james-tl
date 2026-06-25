@@ -43,12 +43,15 @@
   };
 
   // ── Groq proxied through Deno Deploy — the key NEVER lives in the browser.
-  //    Deno has no Cloudflare WAF in front, so the 1010 nonsense doesn't apply:
-  //    clean paths, headers, and bodies all work. Key sits as a Deno env var.
+  //    Groq is proxied through the SAME Vercel backend as everything else
+  //    (api/profiles.py → _handle_llm_proxy). This retires the Deno proxy and
+  //    its billing limits. Auth + mode ride INSIDE one query param `k` to dodge
+  //    Cloudflare's WAF: ?k=<secret> for chat, ?k=<secret>~audio for Whisper.
+  //    (Two separate params would trip WAF 1010; one param is fine.)
   const JAMES_KEY       = 'iaremo-james-9fK3nQ7wL2mP6vXc4bRj8sHy5dTz';
-  const PROXY_BASE      = 'https://jamestl.iaremodelings.deno.net';
-  const GROQ_ENDPOINT   = PROXY_BASE + '/chat';
-  const GROQ_TRANSCRIBE = PROXY_BASE + '/audio';
+  const PROXY_BASE      = 'https://vlm-report.vercel.app/api/profiles';
+  const GROQ_ENDPOINT   = PROXY_BASE + '?k=' + encodeURIComponent(JAMES_KEY);
+  const GROQ_TRANSCRIBE = PROXY_BASE + '?k=' + encodeURIComponent(JAMES_KEY + '~audio');
   const GROQ_MODEL      = 'openai/gpt-oss-120b';
   const WHISPER_MODEL   = 'whisper-large-v3-turbo';
   const PROFILES_BASE = 'https://vlm-report.vercel.app/api/profiles';
@@ -56,13 +59,13 @@
   const PIVOT_BASE  = 'https://taylor-convenience-likelihood-populations.trycloudflare.com/pivot';
   const PIVOT_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiIsImFnZW50X25hbWUiOm51bGwsImZ1bGxfbmFtZSI6IkFkbWluIiwic2NvcGUiOiJwZXJtYW5lbnQifQ.Vbr0FEFUWwmAX6LgL_POoCpyeHQHHWhq_RC89m3k330';
 
-  // Headers for proxy calls — NO Groq key (Deno server holds it). The shared
-  // secret goes in a header (Deno has no WAF blocking custom headers).
-  // withJson=true adds Content-Type for chat; audio (multipart) sets its own boundary.
+  // Headers for proxy calls. The secret rides in the URL (k param), so headers
+  // stay minimal. For chat we send text/plain (JSON string body) to avoid a CORS
+  // preflight — the server reads the body with json.loads regardless of type.
+  // For audio we MUST send multipart (FormData sets its own Content-Type/boundary).
   function jamesHeaders(withJson) {
     const h = {};
-    if (JAMES_KEY) h['x-james-key'] = JAMES_KEY;
-    if (withJson) h['Content-Type'] = 'application/json';
+    if (withJson) h['Content-Type'] = 'text/plain';
     return h;
   }
 
