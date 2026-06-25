@@ -507,6 +507,7 @@
       JStore.set('agentName', n);
       showMiniStatus(`${n} detected`);
       setTimeout(() => loadAgentProfile(n), 800);
+      startHeartbeat();   // tell the dashboard this agent has James running
       return true;
     };
 
@@ -522,6 +523,45 @@
     // DOM may not be fully rendered yet — retry for a bit
     let a = 0;
     const p = setInterval(() => { if (tryD() || ++a > 20) clearInterval(p); }, 1500);
+  }
+
+  // ── HEARTBEAT: tell the dashboard this agent has James running ───────────────
+  // Fires once when the name is detected, then every 15 min while the page is open.
+  // The dashboard uses last-seen to show who's online. Best-effort; never blocks.
+  let _heartbeatStarted = false;
+  function startHeartbeat() {
+    if (_heartbeatStarted || !state.agentName) return;
+    _heartbeatStarted = true;
+    sendHeartbeat();                          // immediately
+    setInterval(sendHeartbeat, 15 * 60 * 1000); // every 15 minutes
+    // Also send one when the tab is being closed (best-effort, marks last activity)
+    window.addEventListener('beforeunload', () => {
+      try {
+        const blob = new Blob(
+          [JSON.stringify({ name: state.agentName, event: 'unload', timestamp: new Date().toISOString() })],
+          { type: 'application/json' }
+        );
+        navigator.sendBeacon(`${PROFILES_BASE}/heartbeat`, blob);
+      } catch (_) {}
+    });
+  }
+
+  async function sendHeartbeat() {
+    if (!state.agentName) return;
+    try {
+      await fetch(`${PROFILES_BASE}/heartbeat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: state.agentName,
+          event: 'alive',
+          onCall: !!state.callStartTime,
+          coaching: !!state.coachingActive,
+          timestamp: new Date().toISOString()
+        }),
+        signal: AbortSignal.timeout(6000)
+      });
+    } catch (_) { /* non-fatal — dashboard just shows slightly stale last-seen */ }
   }
 
   // ── LOAD AGENT PROFILE (direct fetch) ──────────────────────────────────────
