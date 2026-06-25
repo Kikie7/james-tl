@@ -472,29 +472,56 @@
 
   // ── AGENT NAME AUTO-DETECT ─────────────────────────────────────────────────
   function autoDetectAgentName() {
-    const sels = ['[class*="agent-name"]','[class*="user-name"]','[class*="username"]',
-      '[class*="profile-name"]','[id*="agent-name"]','[id*="username"]','.navbar .user','[data-agent-name]'];
-    const tryD = () => {
-      for (const s of sels) {
-        const el = document.querySelector(s);
-        if (el) {
-          const n = (el.getAttribute('data-agent-name') || el.textContent || '').trim();
-          if (n && n.length > 2 && n.length < 50 && /[a-zA-Z]/.test(n) && !n.includes('@') && !/^\d+$/.test(n)) {
-            if (n !== state.agentName) {
-              state.agentName = n;
-              JStore.set('agentName', n);
-              showMiniStatus(`${n} detected`);
-              setTimeout(() => loadAgentProfile(n), 1200);
-            }
-            return true;
-          }
-        }
+    // ReadyMode exposes the logged-in agent two ways, both available at page load:
+    //  1) the full name "Kikie Jacobs" sits in an <h2> and <span> elements (no id/class,
+    //     so we match by content: a clean "First Last" inside a small element).
+    //  2) a cookie `saved_account=Kikie.J` (login handle) — fallback if DOM not ready.
+    const looksLikeName = (t) =>
+      /^[A-Z][a-zA-Z'’.-]+(?:\s+[A-Z][a-zA-Z'’.-]+){1,2}$/.test(t) && t.length >= 4 && t.length < 40;
+
+    const fromDom = () => {
+      // Prefer headings/spans that hold just a name (the My-Files/user header etc.)
+      const els = document.querySelectorAll('h2, span, .user, [class*="user"], [class*="agent"]');
+      for (const el of els) {
+        if (el.children.length !== 0) continue;          // leaf nodes only
+        const t = (el.textContent || '').trim();
+        if (looksLikeName(t)) return t;
       }
+      return '';
+    };
+
+    const fromCookie = () => {
+      // saved_account=Kikie.J  → "Kikie J"
+      const m = document.cookie.match(/saved_account=([^;]+)/);
+      if (!m) return '';
+      let v = decodeURIComponent(m[1]).trim();             // "Kikie.J"
+      v = v.replace(/[._]+/g, ' ').replace(/\s+/g, ' ').trim();  // "Kikie J"
+      // Title-case each part
+      v = v.split(' ').map(w => w ? w[0].toUpperCase() + w.slice(1) : w).join(' ');
+      return looksLikeName(v) || /^[A-Z][a-z]+ [A-Z]$/.test(v) ? v : '';
+    };
+
+    const apply = (n) => {
+      if (!n || n === state.agentName) return true;
+      state.agentName = n;
+      JStore.set('agentName', n);
+      showMiniStatus(`${n} detected`);
+      setTimeout(() => loadAgentProfile(n), 800);
+      return true;
+    };
+
+    const tryD = () => {
+      const dom = fromDom();
+      if (dom) return apply(dom);
+      const ck = fromCookie();
+      if (ck) return apply(ck);
       return false;
     };
+
     if (tryD()) return;
+    // DOM may not be fully rendered yet — retry for a bit
     let a = 0;
-    const p = setInterval(() => { if (tryD() || ++a > 15) clearInterval(p); }, 2000);
+    const p = setInterval(() => { if (tryD() || ++a > 20) clearInterval(p); }, 1500);
   }
 
   // ── LOAD AGENT PROFILE (direct fetch) ──────────────────────────────────────
