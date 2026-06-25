@@ -541,7 +541,7 @@
           [JSON.stringify({ name: state.agentName, event: 'unload', timestamp: new Date().toISOString() })],
           { type: 'application/json' }
         );
-        navigator.sendBeacon(`${PROFILES_BASE}/heartbeat`, blob);
+        navigator.sendBeacon(`${PROFILES_BASE}?do=heartbeat`, blob);
       } catch (_) {}
     });
   }
@@ -549,9 +549,11 @@
   async function sendHeartbeat() {
     if (!state.agentName) return;
     try {
-      await fetch(`${PROFILES_BASE}/heartbeat`, {
+      await fetch(`${PROFILES_BASE}?do=heartbeat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // text/plain keeps this a CORS "simple request" → no OPTIONS preflight.
+        // The body is still JSON text; the server reads it with json.loads regardless.
+        headers: { 'Content-Type': 'text/plain' },
         body: JSON.stringify({
           name: state.agentName,
           event: 'alive',
@@ -1447,9 +1449,9 @@ Respond ONLY as JSON, no markdown:
   async function logCallOutcome(d, transcript, advice) {
     if (!state.agentName) return;
     try {
-      await fetch(`${PROFILES_BASE}/coaching`, {
+      await fetch(`${PROFILES_BASE}?do=coaching`, {
         method: 'POST',
-        headers: { 'Content-Type':'application/json' },
+        headers: { 'Content-Type':'text/plain' },  // simple request, no preflight
         body: JSON.stringify({
           name: state.agentName,
           callId: state.callId,
