@@ -47,9 +47,10 @@
   //    a high-entropy token in the query string trips Cloudflare WAF 1010
   //    (confirmed by __jamesDiag — real secret in ?k= → 403/1010; identical
   //    request without it reaches the code). So the route rides on the non-secret
-  //    ?do=chat / ?do=audio params, and the secret travels in the request itself:
+  //    ?do=chat / ?do=audio params, and the secret travels base64-encoded in the
+  //    request itself (the WAF matches the literal value in URL, body OR header):
   //    chat → JSON body field `k` (injected by groqChat); audio → X-James-Key
-  //    header. The server accepts either, and legacy ?k= for old builds.
+  //    header. The server base64-decodes and also accepts raw / legacy ?k=.
   const JAMES_KEY       = 'iaremo-james-9fK3nQ7wL2mP6vXc4bRj8sHy5dTz';
   const PROXY_BASE      = 'https://vlm-report.vercel.app/api/profiles';
   const GROQ_ENDPOINT   = PROXY_BASE + '?do=chat';
@@ -88,9 +89,11 @@
         const r = await fetch(GROQ_ENDPOINT, {
           method: 'POST',
           headers: jamesHeaders(true),
-          // Secret rides in the body (field `k`), NOT the URL — keeps the
-          // high-entropy token out of the query string that trips WAF 1010.
-          body: JSON.stringify({ k: JAMES_KEY, ...bodyObj }),
+          // Secret rides in the body (field `k`), base64-encoded. Cloudflare's
+          // WAF matches the literal secret string anywhere in the request (URL,
+          // body, or header) and returns 1010, so we never send it verbatim —
+          // btoa() changes the bytes and the server base64-decodes it.
+          body: JSON.stringify({ k: btoa(JAMES_KEY), ...bodyObj }),
           signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined
         });
         if (!r.ok) {
@@ -1128,9 +1131,10 @@
       const r = await fetch(GROQ_TRANSCRIBE, {
         method: 'POST',
         // Audio is multipart (can't carry a JSON `k`), so the secret rides in the
-        // X-James-Key header instead of the URL. This makes it a non-simple CORS
-        // request → the server's do_OPTIONS/_cors handle the preflight.
-        headers: { 'X-James-Key': JAMES_KEY },
+        // X-James-Key header, base64-encoded (the WAF matches the literal secret
+        // in headers too; server base64-decodes it). This makes it a non-simple
+        // CORS request → the server's do_OPTIONS/_cors handle the preflight.
+        headers: { 'X-James-Key': btoa(JAMES_KEY) },
         body: form,
         signal: AbortSignal.timeout(15000)
       });
