@@ -1,12 +1,60 @@
 # James TL — WAF-1010 Diagnostics
 
-The active blocker is **Cloudflare WAF error 1010** on the Groq proxy: a real chat
-`POST https://vlm-report.vercel.app/api/profiles?k=<secret>` comes back `403` with a
-plain-text body `error code: 1010`, so James can't reach the AI and shows
+The active blocker was **Cloudflare WAF error 1010** on the Groq proxy: a real chat
+`POST https://vlm-report.vercel.app/api/profiles?k=<secret>` came back `403` with a
+plain-text body `error code: 1010`, so James couldn't reach the AI and showed
 "Connection hiccup — try again."
 
-This doc covers the two hardening changes now in `james-readymode.js` and the
-exact procedure to isolate what trips the WAF.
+## ✅ STATUS: root cause confirmed + fix implemented
+
+`__jamesDiag()` settled it. The isolation matrix (run live in the ReadyMode console):
+
+| Case | Secret in URL | Body | Result |
+|------|---------------|------|--------|
+| A | fake `hello` | trivial | `400 agents array required` → reached the code |
+| **B** | **real** | trivial | **403 ⛔ 1010** |
+| C | fake `hello` | messages | `400 agents array required` → reached the code |
+| D | real | messages | 403 ⛔ 1010 |
+| E | real | full | 403 ⛔ 1010 |
+
+**B = 1010 while C is clean** → the trigger is the **real 40-char secret value sitting
+in the URL query string** (Cloudflare's managed rules flag a high-entropy token in a
+URL). The `messages[]` body is exonerated. The `k` *param name* is fine — it's the
+*value*.
+
+**Fix (shipped in this repo + `vlm-report`):** the secret no longer rides in the URL.
+
+- **Route** now travels on the non-secret `?do=chat` / `?do=audio` params (same
+  WAF-safe pattern as `?do=heartbeat`).
+- **Chat** carries the secret in the **JSON body** field `k` (injected by `groqChat`);
+  stays a `text/plain` simple request, no preflight.
+- **Audio** (multipart, can't hold a JSON field) carries the secret in the
+  **`X-James-Key` header**; the server's `do_OPTIONS`/`_cors` handle the preflight.
+- **Server** (`profiles.py::_handle_llm_proxy`) resolves the secret from query-`k`
+  (legacy) **or** `X-James-Key` **or** the JSON body `k`, strips `k` before forwarding
+  to Groq, and dispatches the proxy route on `?do=chat|audio`. **Backward compatible**
+  — old `?k=` clients still work, so the server can deploy before the client.
+
+Verified locally (8/8 request-shape checks): new body-secret chat, wrong/no secret →
+401, legacy `?k=`, bad model → 400, audio header-secret, and heartbeat regression.
+
+### Deploy sequence (order matters, but both are safe)
+
+1. **Server first** — deploy `vlm-report` to Vercel production (`main`). It's
+   backward-compatible, so nothing breaks while the old client is still live.
+2. **Client** — get `james-readymode.js` onto `@main`, then
+   `https://purge.jsdelivr.net/gh/Kikie7/james-tl@main/james-readymode.js`, then
+   **fully close and reopen** the ReadyMode tab (re-injection guards block reload).
+3. **Verify** on the live page: `__jamesDiag()` — case B should now be non-1010, and
+   James should coach without "Connection hiccup." Debug line (`Ctrl+Shift+J`) shows
+   `reqs:` climbing with no `waf1010`.
+
+---
+
+## Reference — the hardening changes and how to re-run the probe
+
+The client also gained WAF-aware error surfacing (`groqChat`) and the `__jamesDiag()`
+probe. The procedure below is kept for re-diagnosing if anything regresses.
 
 ---
 

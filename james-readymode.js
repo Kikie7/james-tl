@@ -42,16 +42,18 @@
     IDLE_END_MS:       45000,   // no captions for this long = call ended
   };
 
-  // ── Groq proxied through Deno Deploy — the key NEVER lives in the browser.
-  //    Groq is proxied through the SAME Vercel backend as everything else
-  //    (api/profiles.py → _handle_llm_proxy). This retires the Deno proxy and
-  //    its billing limits. Auth + mode ride INSIDE one query param `k` to dodge
-  //    Cloudflare's WAF: ?k=<secret> for chat, ?k=<secret>~audio for Whisper.
-  //    (Two separate params would trip WAF 1010; one param is fine.)
+  // ── Groq proxied through the SAME Vercel backend as everything else
+  //    (api/profiles.py → _handle_llm_proxy). The secret NEVER lives in the URL:
+  //    a high-entropy token in the query string trips Cloudflare WAF 1010
+  //    (confirmed by __jamesDiag — real secret in ?k= → 403/1010; identical
+  //    request without it reaches the code). So the route rides on the non-secret
+  //    ?do=chat / ?do=audio params, and the secret travels in the request itself:
+  //    chat → JSON body field `k` (injected by groqChat); audio → X-James-Key
+  //    header. The server accepts either, and legacy ?k= for old builds.
   const JAMES_KEY       = 'iaremo-james-9fK3nQ7wL2mP6vXc4bRj8sHy5dTz';
   const PROXY_BASE      = 'https://vlm-report.vercel.app/api/profiles';
-  const GROQ_ENDPOINT   = PROXY_BASE + '?k=' + encodeURIComponent(JAMES_KEY);
-  const GROQ_TRANSCRIBE = PROXY_BASE + '?k=' + encodeURIComponent(JAMES_KEY + '~audio');
+  const GROQ_ENDPOINT   = PROXY_BASE + '?do=chat';
+  const GROQ_TRANSCRIBE = PROXY_BASE + '?do=audio';
   const GROQ_MODEL      = 'openai/gpt-oss-120b';
   const WHISPER_MODEL   = 'whisper-large-v3-turbo';
   const PROFILES_BASE = 'https://vlm-report.vercel.app/api/profiles';
@@ -86,7 +88,9 @@
         const r = await fetch(GROQ_ENDPOINT, {
           method: 'POST',
           headers: jamesHeaders(true),
-          body: JSON.stringify(bodyObj),
+          // Secret rides in the body (field `k`), NOT the URL — keeps the
+          // high-entropy token out of the query string that trips WAF 1010.
+          body: JSON.stringify({ k: JAMES_KEY, ...bodyObj }),
           signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined
         });
         if (!r.ok) {
@@ -1123,7 +1127,10 @@
 
       const r = await fetch(GROQ_TRANSCRIBE, {
         method: 'POST',
-        headers: jamesHeaders(false),
+        // Audio is multipart (can't carry a JSON `k`), so the secret rides in the
+        // X-James-Key header instead of the URL. This makes it a non-simple CORS
+        // request → the server's do_OPTIONS/_cors handle the preflight.
+        headers: { 'X-James-Key': JAMES_KEY },
         body: form,
         signal: AbortSignal.timeout(15000)
       });
