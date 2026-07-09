@@ -42,19 +42,19 @@
     IDLE_END_MS:       45000,   // no captions for this long = call ended
   };
 
-  // ── Groq proxied through the SAME Vercel backend as everything else
-  //    (api/profiles.py → _handle_llm_proxy). The secret NEVER lives in the URL:
-  //    a high-entropy token in the query string trips Cloudflare WAF 1010
-  //    (confirmed by __jamesDiag — real secret in ?k= → 403/1010; identical
-  //    request without it reaches the code). So the route rides on the non-secret
-  //    ?do=chat / ?do=audio params, and the secret travels base64-encoded in the
-  //    request itself (the WAF matches the literal value in URL, body OR header):
-  //    chat → JSON body field `k` (injected by groqChat); audio → X-James-Key
-  //    header. The server base64-decodes and also accepts raw / legacy ?k=.
+  // ── Groq is proxied through a STATELESS Railway service, NOT Vercel. Vercel is
+  //    fronted by a Cloudflare WAF that intermittently 1010s the Groq calls
+  //    (confirmed: identical requests sometimes reach the server, sometimes 1010 —
+  //    a bot/browser-signature score). Railway (*.up.railway.app) isn't Cloudflare-
+  //    fronted, so the AI path stops being blocked. Only the two AI endpoints move;
+  //    all stateful routes (profiles/heartbeat/dashboard) stay on Vercel below.
+  //    The secret rides base64-encoded — body field `k` for chat (injected by
+  //    groqChat), X-James-Key header for audio; the proxy decodes it.
   const JAMES_KEY       = 'iaremo-james-9fK3nQ7wL2mP6vXc4bRj8sHy5dTz';
+  const RAILWAY_PROXY   = 'https://vlm-report-production.up.railway.app';
   const PROXY_BASE      = 'https://vlm-report.vercel.app/api/profiles';
-  const GROQ_ENDPOINT   = PROXY_BASE + '?do=chat';
-  const GROQ_TRANSCRIBE = PROXY_BASE + '?do=audio';
+  const GROQ_ENDPOINT   = RAILWAY_PROXY + '/chat';
+  const GROQ_TRANSCRIBE = RAILWAY_PROXY + '/audio';
   const GROQ_MODEL      = 'openai/gpt-oss-120b';
   const WHISPER_MODEL   = 'whisper-large-v3-turbo';
   const PROFILES_BASE = 'https://vlm-report.vercel.app/api/profiles';
