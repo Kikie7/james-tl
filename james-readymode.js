@@ -69,6 +69,82 @@
     return h;
   }
 
+  // ── Chat helper for the Groq proxy ──────────────────────────────────────────
+  // One place that owns the WAF-aware failure handling. Cloudflare's WAF 1010
+  // block comes back as an HTTP 403 with a NON-JSON body ("error code: 1010"),
+  // so calling r.json() on it throws and the real cause gets masked as a generic
+  // "fetch:Unexpected token" parse error. Here we check r.ok FIRST and surface the
+  // status + body snippet (flagged `waf1010`) into dbgErr, so the debug line shows
+  // exactly what's blocking us. Returns parsed JSON on success, or null on an HTTP
+  // error (dbgErr already set). Throws only on a transient network/timeout error
+  // (after one retry) so each caller's own catch can show its fallback UI.
+  async function groqChat(bodyObj, timeoutMs) {
+    dbgReqs++;
+    let lastErr;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const r = await fetch(GROQ_ENDPOINT, {
+          method: 'POST',
+          headers: jamesHeaders(true),
+          body: JSON.stringify(bodyObj),
+          signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined
+        });
+        if (!r.ok) {
+          const snippet = (await r.text().catch(() => '')).replace(/\s+/g, ' ').trim().slice(0, 60);
+          const waf = /\b1010\b/.test(snippet) ? ' waf1010' : '';
+          dbgErr = 'groq:' + r.status + waf + (snippet ? ' ' + snippet : '');
+          return null;                       // deterministic HTTP error (incl. WAF) — don't retry
+        }
+        return await r.json();
+      } catch (e) {
+        lastErr = e;                          // network / timeout — transient, retry once
+      }
+    }
+    dbgErr = 'fetch:' + (lastErr && lastErr.name === 'TimeoutError'
+      ? 'timeout'
+      : ((lastErr && lastErr.message) || 'err')).slice(0, 30);
+    throw lastErr;
+  }
+
+  // ── WAF-1010 isolation probe (console tool) ─────────────────────────────────
+  // Run  __jamesDiag()  in the ReadyMode devtools console on a live https page to
+  // pin down what trips Cloudflare WAF 1010 on the Groq proxy. Uses the REAL
+  // in-page constants (JAMES_KEY / PROXY_BASE / GROQ_MODEL) so nothing drifts from
+  // what James actually sends. Reports status + body snippet for each request
+  // shape. See DIAGNOSTICS.md for how to read the result matrix.
+  async function jamesDiag() {
+    const enc = encodeURIComponent(JAMES_KEY);
+    const trivialBody  = JSON.stringify({ test: 1 });
+    const messagesBody = JSON.stringify({ messages: [{ role: 'user', content: 'say hello' }] });
+    const realBody     = JSON.stringify({ model: GROQ_MODEL, messages: [{ role: 'user', content: 'say hello' }], max_tokens: 50 });
+    const cases = [
+      ['A control  fake-secret + trivial-body ', PROXY_BASE + '?k=hello', trivialBody],
+      ['B         real-secret + trivial-body  ', PROXY_BASE + '?k=' + enc, trivialBody],
+      ['C         fake-secret + messages-body ', PROXY_BASE + '?k=hello', messagesBody],
+      ['D         real-secret + messages-body ', PROXY_BASE + '?k=' + enc, messagesBody],
+      ['E full    real-secret + real-body     ', PROXY_BASE + '?k=' + enc, realBody],
+    ];
+    console.log('%c[James] WAF diagnostic — ' + cases.length + ' probes…', 'color:#3b82c4;font-weight:bold');
+    const out = [];
+    for (const [label, url, body] of cases) {
+      try {
+        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body });
+        const t = (await r.text()).replace(/\s+/g, ' ').trim().slice(0, 100);
+        const waf = /\b1010\b/.test(t);
+        out.push({ case: label.trim(), status: r.status, waf1010: waf, body: t });
+        console.log('%c[diag] ' + label + '→ ' + r.status + (waf ? ' ⛔WAF-1010' : '') + '  ' + t,
+                    waf ? 'color:#c0392b' : 'color:#2e7d32');
+      } catch (e) {
+        out.push({ case: label.trim(), status: 'threw', waf1010: false, body: e.name + ': ' + (e.message || '') });
+        console.log('%c[diag] ' + label + '→ threw ' + e.name + ': ' + (e.message || '').slice(0, 60), 'color:#c0392b');
+      }
+    }
+    console.log('%c[James] done. Read: B=1010 → the SECRET in the URL is the trigger. C/D=1010 → the messages[] BODY is the trigger. Only E=1010 → it is the combination.', 'color:#3b82c4');
+    console.table(out);
+    return out;
+  }
+  window.__jamesDiag = jamesDiag;
+
   let state = {
     callStartTime:   null,
     callId:          null,
@@ -1126,7 +1202,6 @@
       const chunk = [...new Set(state.captionBuffer)].join(' ').trim();
       state.captionBuffer = [];
       if (chunk.length < 15) return;
-      dbgReqs++;
       console.log('%c[James] CHUNK being sent:', 'color:#5ba829;font-weight:bold', chunk);
       console.log('%c[James] FULL transcript tail:', 'color:#888', state.fullTranscript.slice(-8).join(' | '));
       await getCoachingTip(chunk);
@@ -1290,13 +1365,9 @@ When you speak, make it ONE sharp, natural, immediately-usable nudge — never a
 
     setThinking(true);
     try {
-      const r = await fetch(GROQ_ENDPOINT, {
-        method: 'POST',
-        headers: jamesHeaders(true),
-        body: JSON.stringify({ model: GROQ_MODEL, messages: [{role:'user',content:prompt}], max_tokens: 1500, temperature: 0.45, reasoning_effort: 'low', include_reasoning: false })
-      });
-      const data = await r.json();
+      const data = await groqChat({ model: GROQ_MODEL, messages: [{role:'user',content:prompt}], max_tokens: 1500, temperature: 0.45, reasoning_effort: 'low', include_reasoning: false }, 12000);
       setThinking(false);
+      if (!data) return;  // HTTP/WAF error — dbgErr already set by groqChat
       if (data.error) { dbgErr = 'groq:' + (data.error.message||'').slice(0,40); return; }
 
       const msg = data?.choices?.[0]?.message || {};
@@ -1380,14 +1451,9 @@ Max 40 words. Warm, confident, firm TL voice. Never invent the customer's name.
 Respond ONLY as JSON: {"type":"tactical|urgent|morale","tip":"your answer grounded in this call"}`;
 
     try {
-      const r = await fetch(GROQ_ENDPOINT, {
-        method: 'POST',
-        headers: jamesHeaders(true),
-        body: JSON.stringify({ model: GROQ_MODEL, messages:[{role:'user',content:prompt}], max_tokens: 1800, temperature: 0.5, reasoning_effort: 'low', include_reasoning: false })
-      });
-      const data = await r.json();
+      const data = await groqChat({ model: GROQ_MODEL, messages:[{role:'user',content:prompt}], max_tokens: 1800, temperature: 0.5, reasoning_effort: 'low', include_reasoning: false }, 12000);
       setThinking(false);
-      if (data.error) { showAskBubble('warn', 'Hmm, try again in a moment.', false); return; }
+      if (!data || data.error) { showAskBubble('warn', 'Hmm, try again in a moment.', false); return; }
       let raw = (data?.choices?.[0]?.message?.content || '').replace(/```json|```/g,'').trim();
       let parsed; try { parsed = JSON.parse(raw); } catch(_) {
         const m = raw.match(/\{[\s\S]*?\}/); if (m) { try { parsed = JSON.parse(m[0]); } catch(_){} }
@@ -1428,14 +1494,9 @@ Respond ONLY as JSON, no markdown:
 }`;
 
     try {
-      const r = await fetch(GROQ_ENDPOINT, {
-        method: 'POST',
-        headers: jamesHeaders(true),
-        body: JSON.stringify({ model: GROQ_MODEL, messages:[{role:'user',content:prompt}], max_tokens: 2500, temperature: 0.4, reasoning_effort: 'medium', include_reasoning: false })
-      });
-      const data = await r.json();
+      const data = await groqChat({ model: GROQ_MODEL, messages:[{role:'user',content:prompt}], max_tokens: 2500, temperature: 0.4, reasoning_effort: 'medium', include_reasoning: false }, 18000);
       setThinking(false);
-      if (data.error) return;
+      if (!data || data.error) return;
       let raw = (data?.choices?.[0]?.message?.content||'').replace(/```json|```/g,'').trim();
       let d; try { d = JSON.parse(raw); } catch(_) { return; }
 
