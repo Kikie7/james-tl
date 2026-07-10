@@ -1544,6 +1544,10 @@ Respond ONLY as JSON, no markdown:
           missing: d.missing || [],
           advice_given: advice,
           self_reflection: d.self_reflection || '',
+          // Send the transcript + debrief so the dashboard can show how the call
+          // actually went (server caps the sizes). Transcript trimmed to the tail.
+          transcript: (transcript || '').slice(-8000),
+          debrief: d.debrief || '',
           timestamp: new Date().toISOString()
         }),
         signal: AbortSignal.timeout(6000)
