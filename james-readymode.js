@@ -225,7 +225,7 @@
     state.jamesEnabled = JStore.get('jamesEnabled', true) !== false;
     state.minimized    = JStore.get('jamesMinimized', false) === true;
     const savedName = JStore.get('agentName', '');
-    if (savedName) { state.agentName = savedName; loadAgentProfile(savedName); }
+    if (savedName) { state.agentName = savedName; loadAgentProfile(savedName); startHeartbeat(); }
     buildAvatar();
     observeCaptions();
     startAgentMic();
@@ -588,11 +588,17 @@
     };
 
     const apply = (n) => {
-      if (!n || n === state.agentName) return true;
-      state.agentName = n;
-      JStore.set('agentName', n);
-      showMiniStatus(`${n} detected`);
-      setTimeout(() => loadAgentProfile(n), 800);
+      if (!n) return false;
+      if (n !== state.agentName) {
+        state.agentName = n;
+        JStore.set('agentName', n);
+        showMiniStatus(`${n} detected`);
+        setTimeout(() => loadAgentProfile(n), 800);
+      }
+      // Always (re)start the heartbeat once we know who this is — even when the
+      // name was already cached from a prior session (n === state.agentName).
+      // Without this, returning agents never ping and the dashboard shows them
+      // offline forever. startHeartbeat() is idempotent (guards _heartbeatStarted).
       startHeartbeat();   // tell the dashboard this agent has James running
       return true;
     };
