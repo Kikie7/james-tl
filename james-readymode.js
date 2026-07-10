@@ -11,22 +11,24 @@
 (() => {
   const IS_TOP_FRAME = (window === window.top);
 
-  // ── RE-INJECTION GUARD ──────────────────────────────────────────────────────
-  // The ReadyMode script tab (Contact History) may re-run this code on every new
-  // lead. James should load exactly ONCE per page and keep floating across leads,
-  // so bail out if we've already booted in this window.
-  if (IS_TOP_FRAME && window.__jamesTLLoaded) {
+  // ── WHERE TO RENDER ─────────────────────────────────────────────────────────
+  // ReadyMode sometimes wraps the whole agent UI in a (cross-origin) iframe — so
+  // this code, pasted into the Contact-history script, runs INSIDE that frame,
+  // not the literal top window. If we only rendered in window===window.top, James
+  // would silently do nothing in the wrapped view (which is what happened after
+  // ReadyMode moved to the wrapper layout). So: render in the top frame OR in any
+  // frame large enough to be the main agent view, and skip only small widget
+  // iframes (which would otherwise draw a stray avatar / capture duplicate audio).
+  const IS_MAIN_FRAME = IS_TOP_FRAME ||
+    (window.innerWidth >= 700 && window.innerHeight >= 450);
+  if (!IS_MAIN_FRAME) {
     return;
   }
-  if (IS_TOP_FRAME) { window.__jamesTLLoaded = true; }
-
-  // ── CHILD FRAME: nothing to do. ────────────────────────────────────────────
-  // The old approach scraped DOM captions in child frames. We now capture the
-  // agent's mic once in the top frame and transcribe via Whisper, so child
-  // frames don't need to do anything. (Avoids duplicate/garbage captions.)
-  if (!IS_TOP_FRAME) {
+  // Boot exactly once per frame — the Contact-history script re-runs on each lead.
+  if (window.__jamesTLLoaded) {
     return;
   }
+  window.__jamesTLLoaded = true;
 
   // ══════════════════════════════════════════════════════════════════════════
   // TOP FRAME — full James
