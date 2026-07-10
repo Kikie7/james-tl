@@ -998,11 +998,27 @@
     }
   }
 
+  // Collect <audio>/<video> elements from the top frame AND every same-origin
+  // child frame. James runs in the top frame, but ReadyMode's SIP call-audio
+  // element often lives in a different (same-origin) frame, so a top-only query
+  // misses the customer stream. Cross-origin frames are skipped (unreachable).
+  function collectMediaEls() {
+    const out = [];
+    const add = (doc) => { try { out.push.apply(out, doc.querySelectorAll('audio, video')); } catch (_) {} };
+    add(document);
+    try { add(window.top.document); } catch (_) {}
+    try {
+      const fr = window.top.frames;
+      for (let i = 0; i < fr.length; i++) { try { add(fr[i].document); } catch (_) {} }
+    } catch (_) {}
+    return out;
+  }
+
   // Hunt for ReadyMode's call-audio <audio> element and capture its stream.
   // Returns true if it found and captured audio, false otherwise.
   function tryCaptureReadymodeAudio() {
     try {
-      const audios = Array.from(document.querySelectorAll('audio, video'));
+      const audios = collectMediaEls();
       // Find an audio element that actually has a live MediaStream (the call)
       let target = null;
       for (const el of audios) {
