@@ -194,6 +194,10 @@
 
   // debug counters
   let dbgCaptions = 0, dbgReqs = 0, dbgTips = 0, dbgErr = '';
+  // Declared here (above init()) so init()'s startHeartbeat() call doesn't hit a
+  // temporal-dead-zone ReferenceError — startHeartbeat is hoisted, but this `let`
+  // is not, and init() runs during module load.
+  let _heartbeatStarted = false;
 
   // ── TESTING HOOK: window.postMessage force-start, bypasses everything ──────
   window.addEventListener('message', (e) => {
@@ -620,7 +624,6 @@
   // ── HEARTBEAT: tell the dashboard this agent has James running ───────────────
   // Fires once when the name is detected, then every 15 min while the page is open.
   // The dashboard uses last-seen to show who's online. Best-effort; never blocks.
-  let _heartbeatStarted = false;
   function startHeartbeat() {
     if (_heartbeatStarted || !state.agentName) return;
     _heartbeatStarted = true;
