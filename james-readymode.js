@@ -228,6 +228,7 @@
 
   // ── INIT ────────────────────────────────────────────────────────────────────
   (function init() {
+    hookCustomerAudioViaWebRTC();   // patch WebRTC ASAP so we catch the call's customer stream
     state.jamesEnabled = JStore.get('jamesEnabled', true) !== false;
     state.minimized    = JStore.get('jamesMinimized', false) === true;
     const savedName = JStore.get('agentName', '');
@@ -997,6 +998,50 @@
       if (cbtn) { cbtn.textContent = '✓ HEARING CUST'; cbtn.dataset.off = 'true'; }
     } catch (err) {
       dbgErr = 'tab:' + (err.name || 'denied');
+    }
+  }
+
+  // ── CUSTOMER AUDIO via WebRTC hook ──────────────────────────────────────────
+  // ReadyMode's SIP phone plays the customer over a WebRTC PeerConnection with NO
+  // <audio> element (confirmed: zero audio/video elements exist during a live
+  // call), so there's nothing for tryCaptureReadymodeAudio() to tap. Instead we
+  // patch RTCPeerConnection.prototype.setRemoteDescription — shared by EVERY peer
+  // connection on the page, even ones SIP.js built from a cached constructor
+  // reference — and pull the remote (customer) audio track off pc.getReceivers()
+  // once the remote description is set. Fires per call; re-captures after a call
+  // ends (stopCustomerCapture nulls tabStream).
+  function hookCustomerAudioViaWebRTC() {
+    try {
+      const RTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+      if (!RTC || !RTC.prototype || RTC.prototype.__jamesSRDHooked) return;
+      const origSRD = RTC.prototype.setRemoteDescription;
+      RTC.prototype.setRemoteDescription = function (...args) {
+        const pc  = this;
+        const ret = origSRD.apply(pc, args);
+        Promise.resolve(ret).then(() => {
+          try {
+            if (!state.jamesEnabled || state.tabStream) return;   // disabled, or already have it
+            const audio = (pc.getReceivers ? pc.getReceivers() : [])
+              .map(r => r && r.track)
+              .filter(t => t && t.kind === 'audio' && t.readyState !== 'ended');
+            if (!audio.length) return;
+            const stream = new MediaStream(audio);
+            state.tabStream   = stream;
+            state.tabIsDirect = true;
+            audio[0].addEventListener('ended', () => { stopCustomerCapture(); });
+            beginChunkedCapture(stream, 'Customer');
+            showMiniStatus('Hearing customer (WebRTC) ✓');
+            const cbtn = document.getElementById('jt-customer-btn');
+            if (cbtn) { cbtn.textContent = '✓ HEARING CUST'; cbtn.dataset.off = 'true'; }
+            console.log('[James] captured customer audio via WebRTC receiver');
+          } catch (_) {}
+        }).catch(() => {});
+        return ret;
+      };
+      RTC.prototype.__jamesSRDHooked = true;
+      console.log('[James] WebRTC customer-audio hook installed');
+    } catch (e) {
+      console.warn('[James] WebRTC hook failed:', e);
     }
   }
 
