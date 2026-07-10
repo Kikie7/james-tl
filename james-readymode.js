@@ -1220,10 +1220,16 @@
     if (speaker === 'Agent') state.agentTurns++;
     else state.customerTurns++;
 
-    // Engage coaching once it's a genuine back-and-forth:
-    // customer has actually responded at least twice (rules out voicemail/agent monologue)
+    // Engage coaching once it's a genuine back-and-forth. Two ways to detect it:
+    //  - a real customer channel gave us ≥2 customer turns (ideal), OR
+    //  - the audio is mixed onto one channel (the customer bleeds into the agent
+    //    mic, so everything is tagged "Agent") — then use a sustained exchange as
+    //    the signal. Without this second path, calls where the SIP/customer stream
+    //    isn't separately captured never get LIVE tips (only the post-call debrief).
     if (!state.coachingActive && !state.testMode) {
-      if (state.customerTurns >= 2 && state.agentTurns >= 2) {
+      const twoWay    = state.customerTurns >= 2 && state.agentTurns >= 2;
+      const sustained = (state.agentTurns + state.customerTurns) >= 5;
+      if (twoWay || sustained) {
         state.coachingActive = true;
         updateHeadState();
         startCoachingLoop();
