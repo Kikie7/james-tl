@@ -1001,45 +1001,132 @@
     }
   }
 
-  // ── CUSTOMER AUDIO via WebRTC hook ──────────────────────────────────────────
-  // ReadyMode's SIP phone plays the customer over a WebRTC PeerConnection with NO
-  // <audio> element (confirmed: zero audio/video elements exist during a live
-  // call), so there's nothing for tryCaptureReadymodeAudio() to tap. Instead we
-  // patch RTCPeerConnection.prototype.setRemoteDescription — shared by EVERY peer
-  // connection on the page, even ones SIP.js built from a cached constructor
-  // reference — and pull the remote (customer) audio track off pc.getReceivers()
-  // once the remote description is set. Fires per call; re-captures after a call
-  // ends (stopCustomerCapture nulls tabStream).
+  // ── CUSTOMER AUDIO via WebRTC hook (v2) ─────────────────────────────────────
+  // ReadyMode's SIP phone (SIP.js 0.7.5) plays the customer over a WebRTC
+  // PeerConnection with NO <audio> element (confirmed: zero audio/video elements
+  // exist during a live call), so tryCaptureReadymodeAudio() has nothing to tap.
+  //
+  // Two things broke the v1 hook on this old SIP.js:
+  //   1) It read pc.getReceivers() ONCE, synchronously after setRemoteDescription
+  //      resolved. On SIP.js 0.7.5 the remote (customer) track is delivered a beat
+  //      later via the legacy stream API, so getReceivers() was usually empty.
+  //   2) It fed the raw remote track straight into MediaRecorder. Chrome records a
+  //      raw *remote* WebRTC track as SILENCE (a long-standing quirk) unless the
+  //      track is pumped through the Web Audio graph first.
+  //
+  // v2 fixes both: it wraps the RTCPeerConnection CONSTRUCTOR so it catches every
+  // PC (even ones SIP.js built from a cached constructor reference), listens on
+  // ALL delivery paths — the modern `track` event, the legacy `addstream` event,
+  // and a getReceivers() poll — and routes whatever it finds through an
+  // AudioContext → MediaStreamDestination before recording. Recording the dest
+  // stream (not the raw track) is what makes Chrome actually capture the audio,
+  // and it also means stopCustomerCapture() tears down OUR graph without ever
+  // touching the live call track.
+  function captureCustomerTracks(tracks) {
+    try {
+      if (!state.jamesEnabled || state.tabStream) return false;   // disabled, or already capturing
+      const audio = (tracks || []).filter(t => t && t.kind === 'audio' && t.readyState !== 'ended');
+      if (!audio.length) return false;
+
+      const raw = new MediaStream(audio);
+      // Pump the remote track through Web Audio so Chrome will actually record it.
+      let recStream = raw, ctx = null;
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) {
+          ctx = new AC();
+          if (ctx.state === 'suspended') { try { ctx.resume(); } catch (_) {} }
+          const src  = ctx.createMediaStreamSource(raw);
+          const dest = ctx.createMediaStreamDestination();
+          src.connect(dest);
+          if (dest.stream.getAudioTracks().length) recStream = dest.stream;
+        }
+      } catch (_) { recStream = raw; ctx = null; }
+
+      state.tabStream   = recStream;
+      state.tabAudioCtx = ctx;
+      state.tabIsDirect = true;
+      audio[0].addEventListener('ended', () => { stopCustomerCapture(); });
+
+      beginChunkedCapture(recStream, 'Customer');
+      showMiniStatus('Hearing customer (WebRTC) ✓');
+      const cbtn = document.getElementById('jt-customer-btn');
+      if (cbtn) { cbtn.textContent = '✓ HEARING CUST'; cbtn.dataset.off = 'true'; }
+      console.log('[James] captured customer audio via WebRTC (v2)');
+      return true;
+    } catch (_) { return false; }
+  }
+
+  function jamesAttachToPc(pc) {
+    try {
+      if (!pc || pc.__jamesPcAttached) return;
+      pc.__jamesPcAttached = true;
+
+      // Modern: ontrack fires once per remote track.
+      try {
+        pc.addEventListener('track', (e) => {
+          const tracks = (e.streams && e.streams[0] && e.streams[0].getAudioTracks)
+            ? e.streams[0].getAudioTracks()
+            : (e.track ? [e.track] : []);
+          captureCustomerTracks(tracks);
+        });
+      } catch (_) {}
+
+      // Legacy (SIP.js 0.7.5 path): onaddstream / 'addstream'.
+      const onAdd = (e) => {
+        try { if (e && e.stream && e.stream.getAudioTracks) captureCustomerTracks(e.stream.getAudioTracks()); } catch (_) {}
+      };
+      try { pc.addEventListener('addstream', onAdd); } catch (_) {}
+      try { pc.onaddstream = onAdd; } catch (_) {}
+
+      // Poll getReceivers()/getRemoteStreams() — covers the case where the track
+      // was already attached before we hooked, or neither event fires.
+      let tries = 0;
+      const poll = setInterval(() => {
+        tries++;
+        if (state.tabStream || tries > 24) { clearInterval(poll); return; }
+        try {
+          let tracks = [];
+          if (pc.getReceivers) tracks = pc.getReceivers().map(r => r && r.track).filter(Boolean);
+          if (!tracks.length && pc.getRemoteStreams) {
+            pc.getRemoteStreams().forEach(s => { try { tracks = tracks.concat(s.getAudioTracks()); } catch (_) {} });
+          }
+          if (captureCustomerTracks(tracks)) clearInterval(poll);
+        } catch (_) {}
+      }, 500);
+    } catch (_) {}
+  }
+
   function hookCustomerAudioViaWebRTC() {
     try {
-      const RTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
-      if (!RTC || !RTC.prototype || RTC.prototype.__jamesSRDHooked) return;
-      const origSRD = RTC.prototype.setRemoteDescription;
-      RTC.prototype.setRemoteDescription = function (...args) {
-        const pc  = this;
-        const ret = origSRD.apply(pc, args);
-        Promise.resolve(ret).then(() => {
-          try {
-            if (!state.jamesEnabled || state.tabStream) return;   // disabled, or already have it
-            const audio = (pc.getReceivers ? pc.getReceivers() : [])
-              .map(r => r && r.track)
-              .filter(t => t && t.kind === 'audio' && t.readyState !== 'ended');
-            if (!audio.length) return;
-            const stream = new MediaStream(audio);
-            state.tabStream   = stream;
-            state.tabIsDirect = true;
-            audio[0].addEventListener('ended', () => { stopCustomerCapture(); });
-            beginChunkedCapture(stream, 'Customer');
-            showMiniStatus('Hearing customer (WebRTC) ✓');
-            const cbtn = document.getElementById('jt-customer-btn');
-            if (cbtn) { cbtn.textContent = '✓ HEARING CUST'; cbtn.dataset.off = 'true'; }
-            console.log('[James] captured customer audio via WebRTC receiver');
-          } catch (_) {}
-        }).catch(() => {});
-        return ret;
+      const RTC = window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection;
+      if (!RTC || RTC.__jamesRTCHooked) return;
+
+      // 1) Wrap the constructor so every NEW PeerConnection gets our listeners.
+      const Wrapped = function (...args) {
+        const pc = new RTC(...args);
+        try { jamesAttachToPc(pc); } catch (_) {}
+        return pc;
       };
-      RTC.prototype.__jamesSRDHooked = true;
-      console.log('[James] WebRTC customer-audio hook installed');
+      Wrapped.prototype = RTC.prototype;
+      try { Object.defineProperty(Wrapped, 'name', { value: RTC.name }); } catch (_) {}
+      window.RTCPeerConnection = Wrapped;
+      if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = Wrapped;
+
+      // 2) Also patch setRemoteDescription on the prototype, so PeerConnections
+      //    built from a constructor reference SIP.js cached BEFORE we wrapped it
+      //    still get attached (the remote desc is always set on an incoming call).
+      if (RTC.prototype && !RTC.prototype.__jamesSRDHooked) {
+        const origSRD = RTC.prototype.setRemoteDescription;
+        RTC.prototype.setRemoteDescription = function (...a) {
+          try { jamesAttachToPc(this); } catch (_) {}
+          return origSRD.apply(this, a);
+        };
+        RTC.prototype.__jamesSRDHooked = true;
+      }
+
+      RTC.__jamesRTCHooked = true;
+      console.log('[James] WebRTC customer-audio hook installed (v2)');
     } catch (e) {
       console.warn('[James] WebRTC hook failed:', e);
     }
