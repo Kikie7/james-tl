@@ -36,7 +36,8 @@
 
   const CONFIG = {
     CAPTURE_START_MS:  3000,    // start listening shortly after a call connects
-    COACH_START_MS:    60000,   // transcribe from the start, but hold live tips until 60s in
+    COACH_START_MS:    90000,   // transcribe from the start, but hold live tips until 90s in
+    MIN_DEBRIEF_MS:    90000,   // skip the post-call debrief for calls shorter than this
     COACH_INTERVAL_MS: 8000,    // James READS every 8s; only SPEAKS when needed
     CHUNK_MS:          8000,    // 8s audio chunks → good accuracy + ~8-10s lag
     BUBBLE_LIFETIME_MS: 24000,  // proactive tips stay 24s (was too fast before)
@@ -1024,6 +1025,7 @@
     const transcript = state.fullTranscript.join('\n');
     const advice = [...state.recentTips];
     const callId = state.callId;
+    const durationMs = Date.now() - state.callStartTime;
     state.callStartTime = null;
     state.captureActive = false;
     state.coachingActive = false;
@@ -1036,6 +1038,8 @@
       state.pendingCall = null;
       return;
     }
+    // Short calls (< 90s) aren't a real conversation — no debrief, nothing logged.
+    if (durationMs < CONFIG.MIN_DEBRIEF_MS) return;
     if (transcript.length <= 50 || !state.jamesEnabled) return;
 
     // Hold the debrief until we know the call result. If the agent already
@@ -1508,7 +1512,7 @@
     //    the signal. Without this second path, calls where the SIP/customer stream
     //    isn't separately captured never get LIVE tips (only the post-call debrief).
     if (!state.coachingActive && !state.testMode) {
-      // Hold live tips until the call has run COACH_START_MS (60s) — give the
+      // Hold live tips until the call has run COACH_START_MS (90s) — give the
       // agent room to open on their own. Transcription still runs from the very
       // start; this only gates when James begins *speaking up*.
       const elapsed   = Date.now() - (state.callStartTime || Date.now());
