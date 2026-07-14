@@ -161,7 +161,10 @@
     coachingActive:  false,
     jamesEnabled:    true,
     onBreak:         false,
+    remotePaused:    false, // paused from the dashboard (admin)
     armed:           false,
+    callLive:        false, // a real WebRTC customer stream is up right now
+    webrtcSeen:      false, // WebRTC customer capture has worked at least once
     captionBuffer:   [],
     fullTranscript:  [],
     coachInterval:   null,
@@ -254,6 +257,8 @@
       if (!state.jamesEnabled) return;
       if (!state.tabStream) tryCaptureReadymodeAudio();
     }, 4000);
+    // Poll the dashboard pause switch so an admin can pause/resume this agent.
+    setInterval(pollPauseState, 40 * 1000);
   })();
 
   // ── BUILD THE FLOATING AVATAR ────────────────────────────────────────────────
@@ -439,11 +444,12 @@
   function updateHeadState() {
     const r = root(); if (!r) return;
     let s = 'idle';
-    if (state.onBreak) s = 'break';
+    if (state.remotePaused) s = 'break';
+    else if (state.onBreak) s = 'break';
     else if (state.coachingActive) s = 'active';
     else if (state.captureActive) s = 'capturing';
     else if (state.callStartTime) s = 'waiting';
-    r.dataset.state = state.jamesEnabled ? s : 'idle';
+    r.dataset.state = (state.jamesEnabled && !state.remotePaused) ? s : 'idle';
     const tb = document.getElementById('jt-toggle-btn');
     if (tb) { tb.textContent = state.jamesEnabled ? 'ON' : 'OFF'; tb.dataset.off = state.jamesEnabled ? 'false' : 'true'; }
   }
@@ -631,6 +637,7 @@
     if (_heartbeatStarted || !state.agentName) return;
     _heartbeatStarted = true;
     sendHeartbeat();                          // immediately
+    pollPauseState();                         // learn pause state right away
     setInterval(sendHeartbeat, 15 * 60 * 1000); // every 15 minutes
     // Also send one when the tab is being closed (best-effort, marks last activity)
     window.addEventListener('beforeunload', () => {
@@ -660,8 +667,44 @@
           timestamp: new Date().toISOString()
         }),
         signal: AbortSignal.timeout(6000)
-      });
+      }).then(r => r.ok ? r.json() : null)
+        .then(d => { if (d && typeof d.paused === 'boolean') applyRemotePause(d.paused); })
+        .catch(() => {});
     } catch (_) { /* non-fatal — dashboard just shows slightly stale last-seen */ }
+  }
+
+  // ── REMOTE PAUSE (dashboard) ────────────────────────────────────────────────
+  // The dashboard can pause James for one agent or everyone. James polls this
+  // every ~40s (and learns it on each heartbeat too). When paused it stops
+  // listening, transcribing and coaching — but keeps heart-beating so the
+  // dashboard still shows it online-but-paused, and so it hears "resume".
+  function pollPauseState() {
+    if (!state.agentName) return;
+    fetch(`${PROFILES_BASE}?do=pause-state&name=${encodeURIComponent(state.agentName)}&t=${Date.now()}`,
+          { signal: AbortSignal.timeout(6000) })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && typeof d.paused === 'boolean') applyRemotePause(d.paused); })
+      .catch(() => {});
+  }
+
+  function applyRemotePause(paused) {
+    if (paused === state.remotePaused) return;
+    state.remotePaused = paused;
+    if (paused) {
+      // Tear down anything in flight — no debrief (call is being cut short by admin).
+      if (state.callStartTime) endCall(false);
+      stopCustomerCapture();
+      if (state.coachInterval) { clearInterval(state.coachInterval); state.coachInterval = null; }
+      state.coachingActive = false;
+      hideBubble();
+      updateHeadState();
+      showMiniStatus('Paused by admin');
+      console.log('[James] paused by dashboard');
+    } else {
+      updateHeadState();
+      showMiniStatus('Resumed');
+      console.log('[James] resumed by dashboard');
+    }
   }
 
   // ── LOAD AGENT PROFILE (direct fetch) ──────────────────────────────────────
@@ -875,7 +918,7 @@
 
   // ── CALL LIFECYCLE ────────────────────────────────────────────────────────────
   function startCall(immediate) {
-    if (!state.jamesEnabled || state.onBreak) return;
+    if (!state.jamesEnabled || state.onBreak || state.remotePaused) return;
     state.callStartTime  = Date.now();
     state.callId         = 'call_' + Date.now();
     state.captionBuffer  = [];
@@ -1024,7 +1067,7 @@
   // touching the live call track.
   function captureCustomerTracks(tracks) {
     try {
-      if (!state.jamesEnabled || state.tabStream) return false;   // disabled, or already capturing
+      if (!state.jamesEnabled || state.remotePaused || state.tabStream) return false;   // disabled/paused, or already capturing
       const audio = (tracks || []).filter(t => t && t.kind === 'audio' && t.readyState !== 'ended');
       if (!audio.length) return false;
 
@@ -1046,7 +1089,22 @@
       state.tabStream   = recStream;
       state.tabAudioCtx = ctx;
       state.tabIsDirect = true;
-      audio[0].addEventListener('ended', () => { stopCustomerCapture(); });
+      state.callLive    = true;   // authoritative "a call is really happening" signal
+      state.webrtcSeen  = true;   // proves the hook works here — trust it from now on
+      // Customer track ending IS the call ending — run the debrief, then clean up.
+      audio[0].addEventListener('ended', () => {
+        state.callLive = false;
+        if (state.callStartTime && !state.testMode) {
+          const d = readDisposition();
+          setTimeout(() => endCall(true, d), 1200);
+        }
+        stopCustomerCapture();
+      });
+
+      // A live customer stream IS the call starting. Arm capture/coaching if the
+      // DOM detector hasn't already (this is the reliable trigger; DOM scraping
+      // was firing on non-calls, e.g. the agent watching a video).
+      if (!state.callStartTime) { state.armed = true; startCall(); }
 
       beginChunkedCapture(recStream, 'Customer');
       showMiniStatus('Hearing customer (WebRTC) ✓');
@@ -1237,6 +1295,7 @@
     } catch (_) {}
     state.tabStream = null;
     state.tabAudioCtx = null;
+    state.callLive = false;
     const cbtn = document.getElementById('jt-customer-btn');
     if (cbtn) { cbtn.textContent = '🔊 CUSTOMER'; cbtn.dataset.off = 'false'; }
   }
@@ -1262,7 +1321,13 @@
       rec.onstop = async () => {
         const blob = new Blob(chunks, { type: mime || 'audio/webm' });
         chunks = [];
-        if (blob.size > 2000 && (state.captureActive || state.testMode)) {
+        // Only transcribe when a call is genuinely in progress. Once the WebRTC
+        // hook has proven it works here (webrtcSeen), trust callLive exclusively —
+        // that stops James transcribing the agent's mic between calls (music,
+        // side chatter). Before that, fall back to the DOM-based captureActive so
+        // James still works if WebRTC capture never engages. Never while paused.
+        const onCall = state.testMode || (state.webrtcSeen ? state.callLive : state.captureActive);
+        if (blob.size > 2000 && onCall && !state.remotePaused) {
           transcribeChunk(blob, speaker);
         }
         if (stillLive()) startOne();  // continuous
@@ -1335,7 +1400,7 @@
   function onSpeech(text, speaker) {
     dbgCaptions++;
     state.lastCaptionTime = Date.now();
-    if (state.onBreak) return;
+    if (state.onBreak || state.remotePaused) return;
 
     // A real call begins the moment we're armed and hear speech — capture starts immediately
     if (!state.callStartTime) { if (state.armed || state.testMode) startCall(); else return; }
@@ -1374,7 +1439,7 @@
   function startCoachingLoop() {
     if (state.coachInterval) clearInterval(state.coachInterval);
     state.coachInterval = setInterval(async () => {
-      if (!state.coachingActive || !state.jamesEnabled || state.onBreak) return;
+      if (!state.coachingActive || !state.jamesEnabled || state.onBreak || state.remotePaused) return;
       const chunk = [...new Set(state.captionBuffer)].join(' ').trim();
       state.captionBuffer = [];
       if (chunk.length < 15) return;
