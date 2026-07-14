@@ -42,6 +42,7 @@
     BUBBLE_LIFETIME_MS: 24000,  // proactive tips stay 24s (was too fast before)
     ASK_LIFETIME_MS:   38000,   // ask answers stay longer — you asked, read it
     IDLE_END_MS:       45000,   // no captions for this long = call ended
+    DISPO_WAIT_MS:     35000,   // after a call, wait this long for the agent to pick a call result
   };
 
   // ── Groq is proxied through a STATELESS Railway service, NOT Vercel. Vercel is
@@ -185,6 +186,8 @@
     // learning loop
     adviceLog:       [],   // {advice, moment} given this call
     lastDisposition: '',
+    lastDispoAt:     0,     // when the agent last clicked a call-result button
+    pendingCall:     null,  // {transcript, advice, callId} awaiting a disposition before debrief
     coachingMemory:  null,
     agentTurns:      0,
     customerTurns:   0,
@@ -232,6 +235,7 @@
   // ── INIT ────────────────────────────────────────────────────────────────────
   (function init() {
     hookCustomerAudioViaWebRTC();   // patch WebRTC ASAP so we catch the call's customer stream
+    hookDispositionButtons();       // capture the call result the agent clicks after each call
     state.jamesEnabled = JStore.get('jamesEnabled', true) !== false;
     state.minimized    = JStore.get('jamesMinimized', false) === true;
     const savedName = JStore.get('agentName', '');
@@ -895,23 +899,70 @@
     return false;
   }
 
-  function readDisposition() {
-    // Read which call result was selected (Meeting Set, VLM, etc.)
-    // Look for highlighted/selected disposition button or a result field
-    const dispoSelectors = [
-      '[class*="disposition"] [class*="selected"]',
-      '[class*="call-result"] [class*="active"]',
-      '.selected-disposition', '[class*="result-selected"]'
-    ];
-    for (const s of dispoSelectors) {
-      const el = document.querySelector(s);
-      if (el && el.textContent.trim()) return el.textContent.trim();
+  // ReadyMode's "Step 1. Select a call result" panel — the exact buttons an
+  // agent clicks to disposition a call. We hook the click instead of scraping,
+  // because the result is chosen a few seconds AFTER the audio ends (and the
+  // markup has no reliable "selected" class to read).
+  const DISPO_LABELS = [
+    'NA to Confirmation', 'Voicemail', 'Meeting Set', 'Meeting Confirmed',
+    'Solid Callback/Follow Up', 'Cold Callback/Follow Up', 'No Answer', 'Hang Up',
+    'Business', 'Renter', 'Out of Area', 'Wrong Address', 'Not Our Type of Client',
+    'Wrong Number', 'Not interested', 'Do Not Call', 'Meeting Rescheduled'
+  ];
+  const _norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const DISPO_SET = new Set(DISPO_LABELS.map(_norm));
+
+  // Watch for the agent clicking a call-result button anywhere on the page.
+  function hookDispositionButtons() {
+    if (window.__jamesDispoHooked) return;
+    window.__jamesDispoHooked = true;
+    document.addEventListener('click', (e) => {
+      try {
+        // Walk up a few levels — the label text may be on a child of the button.
+        let el = e.target, hit = '';
+        for (let i = 0; i < 3 && el; i++, el = el.parentElement) {
+          const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+          if (txt && txt.length <= 40 && DISPO_SET.has(_norm(txt))) { hit = txt; break; }
+        }
+        if (!hit) return;
+        state.lastDisposition = hit;
+        state.lastDispoAt = Date.now();
+        console.log('%c[James] call result:', 'color:#e0a800;font-weight:bold', hit);
+        // If a call just ended and we were holding the debrief for the result, run it now.
+        if (state.pendingCall) finalizePendingDebrief(hit);
+      } catch (_) {}
+    }, true);
+  }
+
+  // The disposition captured for THIS call (only if clicked recently — otherwise
+  // it's a stale result from a previous lead).
+  function freshDisposition() {
+    if (state.lastDisposition && (Date.now() - state.lastDispoAt) < 5 * 60 * 1000) {
+      return state.lastDisposition;
     }
-    // Also check the Solidity field we saw in the contact panel
+    return '';
+  }
+
+  function readDisposition() {
+    // Prefer the actual button the agent clicked; fall back to the Solidty field.
+    const d = freshDisposition();
+    if (d) return d;
     const bt = document.body.innerText || '';
-    const sol = bt.match(/Solid[iy]ty:\s*([^\n]+)/i);
+    const sol = bt.match(/Solid[iy]?ty:\s*([^\n]+)/i);   // ReadyMode labels it "Solidty"
     if (sol) return 'Solidity: ' + sol[1].trim();
     return '';
+  }
+
+  // Run the held-back debrief once the disposition is known (or we gave up waiting).
+  function finalizePendingDebrief(dispo) {
+    if (state._dispoTimer) { clearTimeout(state._dispoTimer); state._dispoTimer = null; }
+    const pc = state.pendingCall;
+    if (!pc) return;
+    state.pendingCall = null;
+    if (pc.transcript.length > 50 && state.jamesEnabled) {
+      state.callId = pc.callId;   // log under the right call
+      runDebrief(pc.transcript, pc.advice, dispo || '');
+    }
   }
 
   // (Frame relay listener removed — agent mic via Whisper is the only audio source now.)
@@ -949,20 +1000,34 @@
     showMiniStatus('Listening...');
   }
 
-  async function endCall(doDebrief, disposition) {
+  function endCall(doDebrief, disposition) {
     if (!state.callStartTime) return;
     const transcript = state.fullTranscript.join('\n');
     const advice = [...state.recentTips];
+    const callId = state.callId;
     state.callStartTime = null;
     state.captureActive = false;
     state.coachingActive = false;
     if (state.coachInterval) { clearInterval(state.coachInterval); state.coachInterval = null; }
     updateHeadState();
 
-    // Post-call debrief + solidity judgment + learning
-    if (doDebrief && transcript.length > 50 && state.jamesEnabled) {
-      await runDebrief(transcript, advice, disposition || '');
+    // No debrief wanted (paused / on break / mid-call cut) — drop anything pending.
+    if (!doDebrief) {
+      if (state._dispoTimer) { clearTimeout(state._dispoTimer); state._dispoTimer = null; }
+      state.pendingCall = null;
+      return;
     }
+    if (transcript.length <= 50 || !state.jamesEnabled) return;
+
+    // Hold the debrief until we know the call result. If the agent already
+    // clicked one (Step 1 panel) — or a caller passed it — debrief immediately;
+    // otherwise wait up to DISPO_WAIT_MS for the click, then debrief anyway so a
+    // call never goes un-debriefed just because it wasn't dispositioned yet.
+    state.pendingCall = { transcript, advice, callId };
+    const known = disposition || freshDisposition();
+    if (known) { finalizePendingDebrief(known); return; }
+    if (state._dispoTimer) clearTimeout(state._dispoTimer);
+    state._dispoTimer = setTimeout(() => finalizePendingDebrief(freshDisposition() || ''), CONFIG.DISPO_WAIT_MS);
   }
 
   // ── CAPTION / SPEECH HANDLING ──────────────────────────────────────────────
@@ -1747,11 +1812,11 @@ Respond ONLY as JSON, no markdown:
       showBubble('debrief', debriefText, true);
 
       // Write the learning back to Vercel (per-agent)
-      logCallOutcome(d, transcript, advice);
+      logCallOutcome(d, transcript, advice, disposition);
     } catch(_) { setThinking(false); }
   }
 
-  async function logCallOutcome(d, transcript, advice) {
+  async function logCallOutcome(d, transcript, advice, disposition) {
     if (!state.agentName) return;
     try {
       await fetch(`${PROFILES_BASE}?do=coaching`, {
@@ -1764,6 +1829,7 @@ Respond ONLY as JSON, no markdown:
           reason: d.reason,
           missing: d.missing || [],
           advice_given: advice,
+          disposition: disposition || '',   // the call result the agent picked in ReadyMode
           self_reflection: d.self_reflection || '',
           // Send the transcript + debrief so the dashboard can show how the call
           // actually went (server caps the sizes). Transcript trimmed to the tail.
