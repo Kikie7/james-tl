@@ -912,6 +912,18 @@
   const _norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const DISPO_SET = new Set(DISPO_LABELS.map(_norm));
 
+  // Results that are NOT a real pitch opportunity — no contact (voicemail, no
+  // answer, hang up) or a disqualified lead (business, renter, wrong number...).
+  // James doesn't debrief these and they don't count toward the agent's solid
+  // rate — a voicemail isn't "not solid". (Genuine conversations that just
+  // didn't convert — Not interested, callbacks, reschedules — still count.)
+  const NO_PITCH_DISPOS = new Set([
+    'NA to Confirmation', 'Voicemail', 'No Answer', 'Hang Up', 'Business',
+    'Renter', 'Out of Area', 'Wrong Address', 'Not Our Type of Client',
+    'Wrong Number', 'Do Not Call'
+  ].map(_norm));
+  const isNoPitch = (dispo) => NO_PITCH_DISPOS.has(_norm(dispo));
+
   // Watch for the agent clicking a call-result button anywhere on the page.
   function hookDispositionButtons() {
     if (window.__jamesDispoHooked) return;
@@ -959,6 +971,13 @@
     const pc = state.pendingCall;
     if (!pc) return;
     state.pendingCall = null;
+    // No-pitch results (voicemail, wrong number, business...) aren't a real
+    // opportunity — don't debrief and don't log them, so they never count as
+    // "not solid" against the agent.
+    if (isNoPitch(dispo)) {
+      showMiniStatus('No pitch (' + dispo + ') — onto the next');
+      return;
+    }
     if (pc.transcript.length > 50 && state.jamesEnabled) {
       state.callId = pc.callId;   // log under the right call
       runDebrief(pc.transcript, pc.advice, dispo || '');
